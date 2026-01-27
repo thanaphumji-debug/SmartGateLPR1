@@ -183,6 +183,7 @@
             txtRfidPort.PlaceholderText = "Port";
             txtRfidPort.Size = new Size(100, 23);
             txtRfidPort.TabIndex = 1;
+            txtRfidPort.TextChanged += txtRfidPort_TextChanged;
             // 
             // txtRfidIP
             // 

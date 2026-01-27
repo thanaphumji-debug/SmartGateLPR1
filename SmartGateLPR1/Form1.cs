@@ -271,8 +271,8 @@ namespace SmartGateLPR1
                     isRfidRunning = true;
                     rfidStream = rfidClient.GetStream();
 
-                    txtRfidPort.Text = "สถานะ: เชื่อมต่อแล้ว";
-                    txtRfidPort.ForeColor = Color.Green;
+                    lblRfidStatus1.Text = "สถานะ: เชื่อมต่อแล้ว";
+                    lblRfidStatus1.ForeColor = Color.Green;
                     btnConnectRFID.Enabled = false; // ปิดปุ่มไม่ให้กดซ้ำ
 
                     // แยก Thread ไปรอรับข้อมูล (เพราะ RFID ส่งมาเมื่อไหร่ไม่รู้)
@@ -382,6 +382,11 @@ namespace SmartGateLPR1
         }
 
         private void groupBox2_Enter(object sender, EventArgs e)
+        {
+
+        }
+
+        private void txtRfidPort_TextChanged(object sender, EventArgs e)
         {
 
         }
