@@ -54,7 +54,7 @@
             // 
             // pbCamera1
             // 
-            pbCamera1.Location = new Point(743, 47);
+            pbCamera1.Location = new Point(30, 53);
             pbCamera1.Name = "pbCamera1";
             pbCamera1.Size = new Size(622, 406);
             pbCamera1.SizeMode = PictureBoxSizeMode.Zoom;
@@ -125,7 +125,7 @@
             // 
             // pbCamera2
             // 
-            pbCamera2.Location = new Point(39, 47);
+            pbCamera2.Location = new Point(751, 53);
             pbCamera2.Name = "pbCamera2";
             pbCamera2.Size = new Size(622, 406);
             pbCamera2.SizeMode = PictureBoxSizeMode.Zoom;
