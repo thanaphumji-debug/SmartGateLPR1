@@ -1,22 +1,24 @@
 ﻿using OpenCvSharp;
 using OpenCvSharp.Extensions;
+using SmartGateLPR;
 using SmartGateLPR1;
 using System;
 using System.Drawing;
-using System.Threading;
-using System.Windows.Forms;
 using System.Net.Sockets; // สำหรับ TCP
 using System.Text;        // สำหรับแปลง bytes เป็น string
+using System.Threading;
+using System.Windows.Forms;
 
 namespace SmartGateLPR1
 {
-    public partial class Form1 : Form
+    public partial class btnDisconnectRFID : Form
     {
+        
         // --- 1. ประกาศตัวแปรแยกสำหรับกล้อง 2 ตัว ---
         private Thread threadCam1;
         private Thread threadCam2;
         // --- ส่วนประกาศตัวแปร RFID ---
-        private TcpClient rfidClient;
+        private SimpleTelnet rfidTelnet;
         private NetworkStream rfidStream;
         private Thread rfidThread;
 
@@ -26,7 +28,7 @@ namespace SmartGateLPR1
 
         private DatabaseHelper db;
 
-        public Form1()
+public btnDisconnectRFID()
         {
             InitializeComponent();
             try { db = new DatabaseHelper(); }
@@ -169,7 +171,7 @@ namespace SmartGateLPR1
 
             // เพิ่มโค้ดปิด RFID
             isRfidRunning = false;
-            if (rfidClient != null) rfidClient.Close();
+            if (rfidTelnet != null) rfidTelnet.Disconnect();
             if (rfidThread != null && rfidThread.IsAlive) rfidThread.Join(200);
         }
 
@@ -248,132 +250,143 @@ namespace SmartGateLPR1
 
         private void btnConnectRFID_Click(object sender, EventArgs e)
         {
+            // --- กรณีที่ 1: ถ้าเชื่อมต่ออยู่แล้ว (ต้องการตัดสาย) ---
+            if (isRfidRunning)
             {
-                if (isRfidRunning) return; // ถ้าเชื่อมอยู่แล้ว ห้ามกดซ้ำ
+                // 1. สั่งหยุด Loop
+                isRfidRunning = false;
 
+                // 2. สั่งตัดสาย Telnet
+                if (rfidTelnet != null) rfidTelnet.Disconnect();
+
+                // 3. เปลี่ยนหน้าจอกลับเป็นสถานะเดิม
+                btnConnectRFID.Text = "เชื่อมต่อ RFID"; // เปลี่ยนชื่อปุ่มกลับ
+                btnConnectRFID.BackColor = Color.LightGray; // (ออปชั่นเสริม) คืนสีปุ่มเดิม
+                lblRfidStatus1.Text = "สถานะ: ตัดการเชื่อมต่อแล้ว";
+                lblRfidStatus1.ForeColor = Color.Red;
+            }
+            // --- กรณีที่ 2: ถ้ายังไม่เชื่อมต่อ (ต้องการเริ่มเชื่อมต่อ) ---
+            else
+            {
                 string ip = txtRfidIP.Text;
-                int port;
+                int port = 23;
 
-                // แปลง Port เป็นตัวเลข
-                if (!int.TryParse(txtRfidPort.Text, out port))
+                lblRfidStatus1.Text = "กำลังเชื่อมต่อ...";
+                lblRfidStatus1.ForeColor = Color.Orange;
+                btnConnectRFID.Enabled = false; // ล็อกปุ่มชั่วคราวกันกดรัวๆ
+
+                // เริ่ม Thread เชื่อมต่อ
+                Thread loginThread = new Thread(() =>
                 {
-                    MessageBox.Show("Port ต้องเป็นตัวเลขเท่านั้น");
-                    return;
-                }
+                    rfidTelnet = new SimpleTelnet();
 
-                try
-                {
-                    // เริ่มเชื่อมต่อ
-                    rfidClient = new TcpClient();
-                    rfidClient.Connect(ip, port); // ถ้า Connect ไม่ได้จะ Error ตรงนี้
+                    if (rfidTelnet.Connect(ip, port))
+                    {
+                        bool loginSuccess = rfidTelnet.Login("alien", "password");
 
-                    // ถ้าผ่านบรรทัดบนมาได้ แสดงว่าเชื่อมติด
-                    isRfidRunning = true;
-                    rfidStream = rfidClient.GetStream();
+                        if (loginSuccess)
+                        {
+                            // สั่งห้ามหลับ (Timeout = 0)
+                            rfidTelnet.Send("set TimeOut = 0");
+                            Thread.Sleep(500);
 
-                    lblRfidStatus1.Text = "สถานะ: เชื่อมต่อแล้ว";
-                    lblRfidStatus1.ForeColor = Color.Green;
-                    btnConnectRFID.Enabled = false; // ปิดปุ่มไม่ให้กดซ้ำ
+                            this.Invoke(new Action(() =>
+                            {
+                                // อัปเดตเมื่อต่อติด
+                                lblRfidStatus1.Text = "สถานะ: เชื่อมต่อสำเร็จ";
+                                lblRfidStatus1.ForeColor = Color.Green;
 
-                    // แยก Thread ไปรอรับข้อมูล (เพราะ RFID ส่งมาเมื่อไหร่ไม่รู้)
-                    rfidThread = new Thread(ReadRfidLoop);
-                    rfidThread.IsBackground = true;
-                    rfidThread.Start();
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"เชื่อมต่อ RFID ไม่ได้: {ex.Message}\n(เช็ค IP, Port และสาย LAN)");
-                }
+                                // *** เปลี่ยนหน้าตาปุ่มให้เป็นปุ่มตัดสาย ***
+                                btnConnectRFID.Text = "ตัดการเชื่อมต่อ";
+                                btnConnectRFID.Enabled = true; // ปลดล็อกปุ่ม
+                            }));
+
+                            // เริ่ม Loop อ่านข้อมูล
+                            isRfidRunning = true;
+                            rfidThread = new Thread(ReadRfidLoop);
+                            rfidThread.IsBackground = true;
+                            rfidThread.Start();
+                        }
+                        else
+                        {
+                            this.Invoke(new Action(() => {
+                                MessageBox.Show("Login ไม่ผ่าน!");
+                                btnConnectRFID.Enabled = true; // ปลดล็อกปุ่มให้ลองใหม่
+                                lblRfidStatus1.Text = "Login ผิดพลาด";
+                            }));
+                            rfidTelnet.Disconnect();
+                        }
+                    }
+                    else
+                    {
+                        this.Invoke(new Action(() => {
+                            MessageBox.Show("เชื่อมต่อ IP ไม่ได้");
+                            btnConnectRFID.Enabled = true; // ปลดล็อกปุ่มให้ลองใหม่
+                            lblRfidStatus1.Text = "ไม่พบเครื่อง RFID";
+                        }));
+                    }
+                });
+
+                loginThread.IsBackground = true;
+                loginThread.Start();
             }
         }
-
         private void ReadRfidLoop()
         {
-            try
+            while (isRfidRunning && rfidTelnet.IsConnected)
             {
-                // 1. เตรียม Stream สำหรับอ่าน/เขียน
-                NetworkStream stream = rfidClient.GetStream();
-                byte[] buffer = new byte[1024];
-
-                // ฟังก์ชันช่วยส่งข้อความ (Local Function)
-                void SendCommand(string cmd)
+                try
                 {
-                    byte[] cmdBytes = Encoding.ASCII.GetBytes(cmd + "\r\n"); // ต้องปิดท้ายด้วย \r\n
-                    stream.Write(cmdBytes, 0, cmdBytes.Length);
-                }
+                    // 1. ส่งคำสั่งถาม Tag
+                    rfidTelnet.Send("Get TagList");
 
-                // --- ขั้นตอน Login (สำคัญมากสำหรับ Alien) ---
-                // รอรับคำว่า "Username>" แล้วส่ง "alien"
-                // รอรับคำว่า "Password>" แล้วส่ง "password"
-                // แต่เพื่อความง่าย เราจะส่งรวดเดียวแล้วรอเคลียร์ Buffer
+                    // 2. รออ่านคำตอบ (รอคำว่า "Tag:" หรือเครื่องหมาย ">" ที่จบประโยค)
+                    // เราใช้ WaitFor เพื่อดึงข้อมูลทั้งหมดที่เครื่องตอบกลับมา
+                    string response = rfidTelnet.WaitFor(">");
 
-                Thread.Sleep(500); // รอเครื่องพร้อมนิดนึง
-                SendCommand("alien");
-                Thread.Sleep(100);
-                SendCommand("password");
-                Thread.Sleep(500); // รอ Login สำเร็จ
-
-                // เคลียร์ข้อความต้อนรับทิ้งไปก่อน
-                if (stream.DataAvailable) stream.Read(buffer, 0, buffer.Length);
-
-                // --- เข้าสู่ลูปถามข้อมูล (Polling) ---
-                while (isRfidRunning && rfidClient.Connected)
-                {
-                    // 2. ส่งคำสั่ง "ขอรายชื่อ Tag เดี๋ยวนี้!"
-                    SendCommand("Get TagList");
-
-                    // 3. รออ่านคำตอบ
-                    Thread.Sleep(200); // พักรอเครื่องประมวลผล (ปรับเร็ว/ช้าได้ตรงนี้)
-
-                    if (stream.DataAvailable)
+                    if (!string.IsNullOrEmpty(response))
                     {
-                        int bytesRead = stream.Read(buffer, 0, buffer.Length);
-                        string response = Encoding.ASCII.GetString(buffer, 0, bytesRead);
-
-                        // Alien จะตอบมาประมาณว่า:
-                        // "Tag:3000E200..." หรือ "(No Tags)"
-
-                        // 4. แยกบรรทัดและกรองเอาเฉพาะเลข Tag
+                        // ... (โค้ดตัด string เหมือนเดิม) ...
                         string[] lines = response.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
                         foreach (string line in lines)
                         {
-                            if (line.StartsWith("Tag:"))
+                            if (line.Contains("Tag:")) // เช็คว่ามีคำว่า Tag: ไหม
                             {
-                                // ตัดคำว่า "Tag:" ออก เหลือแต่เลข
-                                // รูปแบบ: Tag:300833B2DDD9014000000000, Disc:2023...
-                                // เราจะเอาแค่เลขข้างหน้า Comma
-                                string rawTag = line.Substring(4).Trim();
-                                string tagId = rawTag.Split(',')[0].Trim();
+                                // ตัวอย่าง response: Tag:3000E2..., Disc:2023...
+                                int startIndex = line.IndexOf("Tag:") + 4;
+                                int endIndex = line.IndexOf(",");
 
-                                // ส่งไปโชว์หน้าจอ
-                                this.Invoke(new Action(() =>
+                                if (endIndex > startIndex)
                                 {
-                                    txtRFIDInput.Text = tagId;
+                                    string tagId = line.Substring(startIndex, endIndex - startIndex).Trim();
 
-                                    // (Optional) ถ้าต้องการเช็คสิทธิ์ทันที ให้เปิดบรรทัดล่าง
-                                    // btnCheckData.PerformClick();
-                                }));
+                                    this.Invoke(new Action(() =>
+                                    {
+                                        txtRFIDInput.Text = tagId;
+                                        // เรียกฟังก์ชันถ่ายรูป/OCR ต่อตรงนี้
+                                    }));
+                                }
                             }
                         }
                     }
+
+                    Thread.Sleep(200); // พัก 0.2 วิ ก่อนถามรอบถัดไป
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Loop Error: " + ex.Message);
                 }
             }
-            catch (Exception ex)
-            {
-                // Handle Error
-                this.Invoke(new Action(() => MessageBox.Show("RFID Error: " + ex.Message)));
-            }
-            finally
-            {
-                isRfidRunning = false;
-                this.Invoke(new Action(() =>
-                {
-                    lblRfidStatus1.Text = "สถานะ: หลุดการเชื่อมต่อ";
-                    lblRfidStatus1.ForeColor = Color.Red;
-                    btnConnectRFID.Enabled = true;
-                }));
-            }
+
+            // หลุด Loop
+            isRfidRunning = false;
+            rfidTelnet.Disconnect();
+            this.Invoke(new Action(() => {
+                lblRfidStatus1.Text = "หลุดการเชื่อมต่อ";
+                lblRfidStatus1.ForeColor = Color.Red;
+                btnConnectRFID.Enabled = true;
+            }));
         }
 
         private void label3_Click(object sender, EventArgs e)

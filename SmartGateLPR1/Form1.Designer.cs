@@ -1,6 +1,6 @@
 ﻿namespace SmartGateLPR1
 {
-    partial class Form1
+    partial class btnDisconnectRFID
     {
         /// <summary>
         ///  Required designer variable.
@@ -226,7 +226,7 @@
             groupBox2.Text = "ข้อมูล";
             groupBox2.Enter += groupBox2_Enter;
             // 
-            // Form1
+            // btnDisconnectRFID
             // 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
@@ -242,7 +242,7 @@
             Controls.Add(btnStartCamera);
             Controls.Add(pbCamera1);
             ForeColor = Color.Black;
-            Name = "Form1";
+            Name = "btnDisconnectRFID";
             Text = "Form1";
             ((System.ComponentModel.ISupportInitialize)pbCamera1).EndInit();
             ((System.ComponentModel.ISupportInitialize)pbCamera2).EndInit();
