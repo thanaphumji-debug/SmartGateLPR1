@@ -17,37 +17,21 @@ namespace SmartGateLPR1
             InitializeDatabase();
         }
 
-        // 1. สร้างตารางถ้ายังไม่มี (รันครั้งแรกจะสร้างไฟล์ให้เอง)
+        // --- ส่วนฟังก์ชันสร้างตาราง (เพิ่มเข้าไป) ---
         private void InitializeDatabase()
         {
-            if (!File.Exists(dbFile))
-            {
-                SQLiteConnection.CreateFile(dbFile);
-            }
-
-            using (var conn = new SQLiteConnection(connectionString))
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
             {
                 conn.Open();
+                // สร้างตาราง users โดยมี 4 คอลัมน์: id, plate_number, rfid_tag, owner_name
                 string sql = @"
-                    -- ตารางเก็บรายชื่อรถที่อนุญาต (Whitelist)
-                    CREATE TABLE IF NOT EXISTS tb_users (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        plate_number TEXT NOT NULL,
-                        rfid_code TEXT,
-                        owner_name TEXT
-                    );
-
-                    -- ตารางเก็บประวัติการเข้าออก (Logs)
-                    CREATE TABLE IF NOT EXISTS tb_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        access_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        plate_read TEXT,
-                        rfid_read TEXT,
-                        image_path TEXT,
-                        status TEXT -- 'ALLOWED' หรือ 'DENIED'
-                    );
-                ";
-                using (var cmd = new SQLiteCommand(sql, conn))
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plate_number TEXT,
+                    rfid_tag TEXT UNIQUE,
+                    owner_name TEXT
+                )";
+                using (SQLiteCommand cmd = new SQLiteCommand(sql, conn))
                 {
                     cmd.ExecuteNonQuery();
                 }
@@ -60,7 +44,7 @@ namespace SmartGateLPR1
             using (var conn = new SQLiteConnection(connectionString))
             {
                 conn.Open();
-                string sql = "INSERT INTO tb_users (plate_number, rfid_code, owner_name) VALUES (@p, @r, @n)";
+                string sql = "INSERT INTO users (plate_number, rfid_tag, owner_name) VALUES (@p, @r, @n)";
                 using (var cmd = new SQLiteCommand(sql, conn))
                 {
                     cmd.Parameters.AddWithValue("@p", plate);
@@ -146,5 +130,6 @@ namespace SmartGateLPR1
             }
             return dt;
         }
+
     }
 }

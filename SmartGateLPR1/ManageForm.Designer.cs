@@ -29,14 +29,9 @@
         private void InitializeComponent()
         {
             groupBox2 = new GroupBox();
-            btnTestAddData = new Button();
-            btnCheckData = new Button();
+            txtRFID_Manage = new TextBox();
             txtPlateInput = new TextBox();
-            txtRFIDInput = new TextBox();
             txtNameInput = new TextBox();
-            ทะเบียน = new TextBox();
-            textBox2 = new TextBox();
-            textBox3 = new TextBox();
             btnSave = new Button();
             btnDelete = new Button();
             dgvUsers = new DataGridView();
@@ -46,51 +41,33 @@
             // 
             // groupBox2
             // 
-            groupBox2.Controls.Add(btnTestAddData);
-            groupBox2.Controls.Add(btnCheckData);
+            groupBox2.Controls.Add(txtRFID_Manage);
+            groupBox2.Controls.Add(btnDelete);
             groupBox2.Controls.Add(txtPlateInput);
-            groupBox2.Controls.Add(txtRFIDInput);
+            groupBox2.Controls.Add(btnSave);
             groupBox2.Controls.Add(txtNameInput);
-            groupBox2.Location = new Point(52, 540);
+            groupBox2.Location = new Point(53, 48);
             groupBox2.Name = "groupBox2";
             groupBox2.Size = new Size(213, 117);
             groupBox2.TabIndex = 17;
             groupBox2.TabStop = false;
             groupBox2.Text = "ข้อมูล";
             // 
-            // btnTestAddData
+            // txtRFID_Manage
             // 
-            btnTestAddData.Location = new Point(125, 22);
-            btnTestAddData.Name = "btnTestAddData";
-            btnTestAddData.Size = new Size(75, 23);
-            btnTestAddData.TabIndex = 3;
-            btnTestAddData.Text = "เพิ่มข้อมูล";
-            btnTestAddData.UseVisualStyleBackColor = true;
-            // 
-            // btnCheckData
-            // 
-            btnCheckData.Location = new Point(125, 51);
-            btnCheckData.Name = "btnCheckData";
-            btnCheckData.Size = new Size(75, 23);
-            btnCheckData.TabIndex = 4;
-            btnCheckData.Text = "เช็คสิทธิ์";
-            btnCheckData.UseVisualStyleBackColor = true;
+            txtRFID_Manage.Location = new Point(6, 23);
+            txtRFID_Manage.Name = "txtRFID_Manage";
+            txtRFID_Manage.PlaceholderText = "เลขทะเบียน";
+            txtRFID_Manage.Size = new Size(100, 23);
+            txtRFID_Manage.TabIndex = 5;
             // 
             // txtPlateInput
             // 
-            txtPlateInput.Location = new Point(6, 23);
+            txtPlateInput.Location = new Point(6, 52);
             txtPlateInput.Name = "txtPlateInput";
-            txtPlateInput.PlaceholderText = "เลขทะเบียน";
+            txtPlateInput.PlaceholderText = "Tag RFID";
             txtPlateInput.Size = new Size(100, 23);
-            txtPlateInput.TabIndex = 5;
-            // 
-            // txtRFIDInput
-            // 
-            txtRFIDInput.Location = new Point(6, 52);
-            txtRFIDInput.Name = "txtRFIDInput";
-            txtRFIDInput.PlaceholderText = "Tag RFID";
-            txtRFIDInput.Size = new Size(100, 23);
-            txtRFIDInput.TabIndex = 7;
+            txtPlateInput.TabIndex = 7;
             // 
             // txtNameInput
             // 
@@ -100,30 +77,9 @@
             txtNameInput.Size = new Size(100, 23);
             txtNameInput.TabIndex = 8;
             // 
-            // ทะเบียน
-            // 
-            ทะเบียน.Location = new Point(52, 32);
-            ทะเบียน.Name = "ทะเบียน";
-            ทะเบียน.Size = new Size(231, 23);
-            ทะเบียน.TabIndex = 18;
-            // 
-            // textBox2
-            // 
-            textBox2.Location = new Point(52, 70);
-            textBox2.Name = "textBox2";
-            textBox2.Size = new Size(231, 23);
-            textBox2.TabIndex = 19;
-            // 
-            // textBox3
-            // 
-            textBox3.Location = new Point(52, 112);
-            textBox3.Name = "textBox3";
-            textBox3.Size = new Size(231, 23);
-            textBox3.TabIndex = 20;
-            // 
             // btnSave
             // 
-            btnSave.Location = new Point(63, 179);
+            btnSave.Location = new Point(125, 22);
             btnSave.Name = "btnSave";
             btnSave.Size = new Size(75, 23);
             btnSave.TabIndex = 21;
@@ -133,7 +89,7 @@
             // 
             // btnDelete
             // 
-            btnDelete.Location = new Point(177, 179);
+            btnDelete.Location = new Point(125, 52);
             btnDelete.Name = "btnDelete";
             btnDelete.Size = new Size(75, 23);
             btnDelete.TabIndex = 22;
@@ -157,11 +113,6 @@
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(1155, 692);
             Controls.Add(dgvUsers);
-            Controls.Add(btnDelete);
-            Controls.Add(btnSave);
-            Controls.Add(textBox3);
-            Controls.Add(textBox2);
-            Controls.Add(ทะเบียน);
             Controls.Add(groupBox2);
             Name = "ManageForm";
             Text = "ManageForm";
@@ -169,20 +120,14 @@
             groupBox2.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)dgvUsers).EndInit();
             ResumeLayout(false);
-            PerformLayout();
         }
 
         #endregion
 
         private GroupBox groupBox2;
-        private Button btnTestAddData;
-        private Button btnCheckData;
+        private TextBox txtRFID_Manage;
         private TextBox txtPlateInput;
-        private TextBox txtRFIDInput;
         private TextBox txtNameInput;
-        private TextBox ทะเบียน;
-        private TextBox textBox2;
-        private TextBox textBox3;
         private Button btnSave;
         private Button btnDelete;
         private DataGridView dgvUsers;
