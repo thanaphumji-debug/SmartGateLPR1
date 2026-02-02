@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Data;
 using System.Data.SQLite; // ต้องมีบรรทัดนี้ (ถ้าแดง ให้เช็คว่าลง NuGet System.Data.SQLite หรือยัง)
 using System.IO;
 
@@ -110,6 +111,40 @@ namespace SmartGateLPR1
                     cmd.ExecuteNonQuery();
                 }
             }
+        }
+
+        // 2. ฟังก์ชันลบข้อมูลตาม RFID
+        public void DeleteUser(string rfid)
+        {
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = "DELETE FROM users WHERE rfid_tag = @rfid";
+                using (SQLiteCommand cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@rfid", rfid);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        // 1. ฟังก์ชันดึงรายชื่อทั้งหมด (เอาไปใส่ DataGridView)
+        public DataTable GetAllUsers()
+        {
+            DataTable dt = new DataTable();
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = "SELECT * FROM users"; // ตรวจสอบชื่อตารางให้ตรงกับที่คุณสร้างไว้นะครับ
+                using (SQLiteCommand cmd = new SQLiteCommand(sql, conn))
+                {
+                    using (SQLiteDataAdapter adapter = new SQLiteDataAdapter(cmd))
+                    {
+                        adapter.Fill(dt);
+                    }
+                }
+            }
+            return dt;
         }
     }
 }

@@ -13,7 +13,7 @@ namespace SmartGateLPR1
 {
     public partial class btnDisconnectRFID : Form
     {
-        
+
         // --- 1. ประกาศตัวแปรแยกสำหรับกล้อง 2 ตัว ---
         private Thread threadCam1;
         private Thread threadCam2;
@@ -28,7 +28,7 @@ namespace SmartGateLPR1
 
         private DatabaseHelper db;
 
-public btnDisconnectRFID()
+        public btnDisconnectRFID()
         {
             InitializeComponent();
             try { db = new DatabaseHelper(); }
@@ -175,68 +175,7 @@ public btnDisconnectRFID()
             if (rfidThread != null && rfidThread.IsAlive) rfidThread.Join(200);
         }
 
-        private void btnTestAddData_Click_1(object sender, EventArgs e)
-        {
-            {
-                // 1. รับค่าจากช่องที่พิมพ์ (ใช้ .Trim() เพื่อตัดช่องว่างหน้าหลังออก)
-                string plate = txtPlateInput.Text.Trim();
-                string rfid = txtRFIDInput.Text.Trim();
-                string name = txtNameInput.Text.Trim();
-
-                // 2. ตรวจสอบว่ากรอกครบไหม (Validation)
-                if (string.IsNullOrEmpty(plate) || string.IsNullOrEmpty(name))
-                {
-                    MessageBox.Show("กรุณากรอก 'เลขทะเบียน' และ 'ชื่อเจ้าของ' ให้ครบถ้วน");
-                    return; // จบการทำงาน ไม่บันทึก
-                }
-
-                try
-                {
-                    // 3. ส่งข้อมูลเข้า Database
-                    db.AddUser(plate, rfid, name);
-
-                    MessageBox.Show($"บันทึกข้อมูลเรียบร้อย!\nทะเบียน: {plate}\nชื่อ: {name}");
-
-                    // 4. เคลียร์ช่องให้ว่าง เตรียมกรอกคนต่อไป
-                    txtPlateInput.Text = "";
-                    txtRFIDInput.Text = "";
-                    txtNameInput.Text = "";
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("เกิดข้อผิดพลาด: " + ex.Message);
-                }
-            }
-        }
-
-        private void btnCheckData_Click_1(object sender, EventArgs e)
-        {
-            {
-                // เอาค่าจากช่องที่เราพิมพ์ มาสมมติว่าเป็นค่าที่อ่านได้จากกล้อง/RFID
-                string plateRead = txtPlateInput.Text.Trim();
-                string rfidRead = txtRFIDInput.Text.Trim();
-
-                if (string.IsNullOrEmpty(plateRead) && string.IsNullOrEmpty(rfidRead))
-                {
-                    MessageBox.Show("กรุณากรอกข้อมูลที่จะทดสอบ (ทะเบียน หรือ RFID)");
-                    return;
-                }
-
-                // ถาม Database
-                string owner = db.CheckPermission(plateRead, rfidRead);
-
-                if (owner != null)
-                {
-                    MessageBox.Show($"✅ ผ่าน! ยินดีต้อนรับคุณ: {owner}");
-                    db.SaveLog(plateRead, rfidRead, "test.jpg", "ALLOWED");
-                }
-                else
-                {
-                    MessageBox.Show($"❌ ไม่ผ่าน! ไม่พบข้อมูลในระบบ");
-                    db.SaveLog(plateRead, rfidRead, "test.jpg", "DENIED");
-                }
-            }
-        }
+        
 
         private void groupBox1_Enter(object sender, EventArgs e)
         {
@@ -309,7 +248,8 @@ public btnDisconnectRFID()
                         }
                         else
                         {
-                            this.Invoke(new Action(() => {
+                            this.Invoke(new Action(() =>
+                            {
                                 MessageBox.Show("Login ไม่ผ่าน!");
                                 btnConnectRFID.Enabled = true; // ปลดล็อกปุ่มให้ลองใหม่
                                 lblRfidStatus1.Text = "Login ผิดพลาด";
@@ -319,7 +259,8 @@ public btnDisconnectRFID()
                     }
                     else
                     {
-                        this.Invoke(new Action(() => {
+                        this.Invoke(new Action(() =>
+                        {
                             MessageBox.Show("เชื่อมต่อ IP ไม่ได้");
                             btnConnectRFID.Enabled = true; // ปลดล็อกปุ่มให้ลองใหม่
                             lblRfidStatus1.Text = "ไม่พบเครื่อง RFID";
@@ -363,7 +304,7 @@ public btnDisconnectRFID()
 
                                     this.Invoke(new Action(() =>
                                     {
-                                        txtRFIDInput.Text = tagId;
+                                        txtRFIDInput2.Text = tagId;
                                         // เรียกฟังก์ชันถ่ายรูป/OCR ต่อตรงนี้
                                     }));
                                 }
@@ -382,7 +323,8 @@ public btnDisconnectRFID()
             // หลุด Loop
             isRfidRunning = false;
             rfidTelnet.Disconnect();
-            this.Invoke(new Action(() => {
+            this.Invoke(new Action(() =>
+            {
                 lblRfidStatus1.Text = "หลุดการเชื่อมต่อ";
                 lblRfidStatus1.ForeColor = Color.Red;
                 btnConnectRFID.Enabled = true;
@@ -402,6 +344,15 @@ public btnDisconnectRFID()
         private void txtRfidPort_TextChanged(object sender, EventArgs e)
         {
 
+        }
+
+        private void btnOpenManage_Click(object sender, EventArgs e)
+        {
+            // สร้างหน้าต่าง ManageForm ขึ้นมา
+            ManageForm frm = new ManageForm();
+
+            // สั่งให้โชว์แบบ Dialog (คือต้องปิดหน้านั้นก่อน ถึงจะกลับมาหน้าหลักได้)
+            frm.ShowDialog();
         }
     }
 }

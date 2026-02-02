@@ -31,11 +31,6 @@
             pbCamera1 = new PictureBox();
             btnStartCamera = new Button();
             txtRTSP = new TextBox();
-            btnTestAddData = new Button();
-            btnCheckData = new Button();
-            txtPlateInput = new TextBox();
-            txtRFIDInput = new TextBox();
-            txtNameInput = new TextBox();
             pbCamera2 = new PictureBox();
             txtRTSP2 = new TextBox();
             groupBox1 = new GroupBox();
@@ -45,11 +40,11 @@
             txtRfidIP = new TextBox();
             label1 = new Label();
             label2 = new Label();
-            groupBox2 = new GroupBox();
+            btnOpenManage = new Button();
+            txtRFIDInput2 = new TextBox();
             ((System.ComponentModel.ISupportInitialize)pbCamera1).BeginInit();
             ((System.ComponentModel.ISupportInitialize)pbCamera2).BeginInit();
             groupBox1.SuspendLayout();
-            groupBox2.SuspendLayout();
             SuspendLayout();
             // 
             // pbCamera1
@@ -78,50 +73,6 @@
             txtRTSP.PlaceholderText = "ตัวอย่าง rtsp://USERNAME:PASSWORD@IP_ADDRESS/stream1";
             txtRTSP.Size = new Size(293, 23);
             txtRTSP.TabIndex = 2;
-            // 
-            // btnTestAddData
-            // 
-            btnTestAddData.Location = new Point(125, 22);
-            btnTestAddData.Name = "btnTestAddData";
-            btnTestAddData.Size = new Size(75, 23);
-            btnTestAddData.TabIndex = 3;
-            btnTestAddData.Text = "เพิ่มข้อมูล";
-            btnTestAddData.UseVisualStyleBackColor = true;
-            btnTestAddData.Click += btnTestAddData_Click_1;
-            // 
-            // btnCheckData
-            // 
-            btnCheckData.Location = new Point(125, 51);
-            btnCheckData.Name = "btnCheckData";
-            btnCheckData.Size = new Size(75, 23);
-            btnCheckData.TabIndex = 4;
-            btnCheckData.Text = "เช็คสิทธิ์";
-            btnCheckData.UseVisualStyleBackColor = true;
-            btnCheckData.Click += btnCheckData_Click_1;
-            // 
-            // txtPlateInput
-            // 
-            txtPlateInput.Location = new Point(6, 23);
-            txtPlateInput.Name = "txtPlateInput";
-            txtPlateInput.PlaceholderText = "เลขทะเบียน";
-            txtPlateInput.Size = new Size(100, 23);
-            txtPlateInput.TabIndex = 5;
-            // 
-            // txtRFIDInput
-            // 
-            txtRFIDInput.Location = new Point(6, 52);
-            txtRFIDInput.Name = "txtRFIDInput";
-            txtRFIDInput.PlaceholderText = "Tag RFID";
-            txtRFIDInput.Size = new Size(100, 23);
-            txtRFIDInput.TabIndex = 7;
-            // 
-            // txtNameInput
-            // 
-            txtNameInput.Location = new Point(6, 81);
-            txtNameInput.Name = "txtNameInput";
-            txtNameInput.PlaceholderText = "ชื่อเจ้าของรถ";
-            txtNameInput.Size = new Size(100, 23);
-            txtNameInput.TabIndex = 8;
             // 
             // pbCamera2
             // 
@@ -211,20 +162,22 @@
             label2.TabIndex = 15;
             label2.Text = "Camera2";
             // 
-            // groupBox2
+            // btnOpenManage
             // 
-            groupBox2.Controls.Add(btnTestAddData);
-            groupBox2.Controls.Add(btnCheckData);
-            groupBox2.Controls.Add(txtPlateInput);
-            groupBox2.Controls.Add(txtRFIDInput);
-            groupBox2.Controls.Add(txtNameInput);
-            groupBox2.Location = new Point(369, 610);
-            groupBox2.Name = "groupBox2";
-            groupBox2.Size = new Size(213, 117);
-            groupBox2.TabIndex = 16;
-            groupBox2.TabStop = false;
-            groupBox2.Text = "ข้อมูล";
-            groupBox2.Enter += groupBox2_Enter;
+            btnOpenManage.Location = new Point(691, 682);
+            btnOpenManage.Name = "btnOpenManage";
+            btnOpenManage.Size = new Size(90, 23);
+            btnOpenManage.TabIndex = 16;
+            btnOpenManage.Text = "การจัดการ RFID";
+            btnOpenManage.UseVisualStyleBackColor = true;
+            btnOpenManage.Click += btnOpenManage_Click;
+            // 
+            // txtRFIDInput2
+            // 
+            txtRFIDInput2.Location = new Point(467, 610);
+            txtRFIDInput2.Name = "txtRFIDInput2";
+            txtRFIDInput2.Size = new Size(238, 23);
+            txtRFIDInput2.TabIndex = 17;
             // 
             // btnDisconnectRFID
             // 
@@ -232,7 +185,8 @@
             AutoScaleMode = AutoScaleMode.Font;
             BackgroundImageLayout = ImageLayout.Center;
             ClientSize = new Size(1398, 814);
-            Controls.Add(groupBox2);
+            Controls.Add(txtRFIDInput2);
+            Controls.Add(btnOpenManage);
             Controls.Add(label2);
             Controls.Add(label1);
             Controls.Add(groupBox1);
@@ -248,8 +202,6 @@
             ((System.ComponentModel.ISupportInitialize)pbCamera2).EndInit();
             groupBox1.ResumeLayout(false);
             groupBox1.PerformLayout();
-            groupBox2.ResumeLayout(false);
-            groupBox2.PerformLayout();
             ResumeLayout(false);
             PerformLayout();
         }
@@ -259,11 +211,6 @@
         private PictureBox pbCamera1;
         private Button btnStartCamera;
         private TextBox txtRTSP;
-        private Button btnTestAddData;
-        private Button btnCheckData;
-        private TextBox txtPlateInput;
-        private TextBox txtRFIDInput;
-        private TextBox txtNameInput;
         private PictureBox pbCamera2;
         private TextBox txtRTSP2;
         private GroupBox groupBox1;
@@ -273,6 +220,7 @@
         private Button btnConnectRFID;
         private Label label1;
         private Label label2;
-        private GroupBox groupBox2;
+        private Button btnOpenManage;
+        private TextBox txtRFIDInput2;
     }
 }
