@@ -13,7 +13,19 @@ namespace SmartGateLPR1
 
         public DatabaseHelper()
         {
-            connectionString = $"Data Source={dbFile};Version=3;";
+            // 1.ดึงค่าที่อยู่ที่บันทึกไว้
+        string savedPath = Properties.Settings.Default.DbPath;
+
+            // 2. ถ้ายังไม่เคยเลือก (ค่าว่าง) ให้ใช้ค่าเริ่มต้นคือโฟลเดอร์ปัจจุบัน
+            if (string.IsNullOrEmpty(savedPath))
+            {
+                savedPath = "smartgate.db";
+            }
+
+            // 3. กำหนด Connection String ไปที่นั่น
+            connectionString = $"Data Source={savedPath};Version=3;";
+
+            // 4. สร้างตาราง (ถ้ายังไม่มี)
             InitializeDatabase();
         }
 

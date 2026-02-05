@@ -110,5 +110,76 @@ namespace SmartGateLPR1
                 // กันเหนียวไว้ก่อน
             }
         }
+
+        private void btnSelectPath_Click(object sender, EventArgs e)
+        {
+            // สร้างตัวเลือกโฟลเดอร์
+            using (FolderBrowserDialog fbd = new FolderBrowserDialog())
+            {
+                fbd.Description = "กรุณาเลือกโฟลเดอร์สำหรับเก็บฐานข้อมูล";
+
+                // ถ้าผู้ใช้กด OK
+                if (fbd.ShowDialog() == DialogResult.OK)
+                {
+                    // เอา Path ที่เลือก + ชื่อไฟล์
+                    string selectedPath = fbd.SelectedPath;
+                    string fullPath = System.IO.Path.Combine(selectedPath, "smartgate.db");
+
+                    // บันทึกลง Memory (Settings)
+                    Properties.Settings.Default.DbPath = fullPath;
+                    Properties.Settings.Default.Save(); // อย่าลืมบรรทัดนี้! เพื่อให้จำค่าถาวร
+
+                    // อัปเดต Label ให้รู้ว่าเปลี่ยนแล้ว
+                    lblCurrentPath.Text = "ที่เก็บข้อมูล: " + fullPath;
+
+                    MessageBox.Show("เปลี่ยนที่เก็บข้อมูลเรียบร้อย! \nกรุณาปิดและเปิดโปรแกรมใหม่เพื่อเริ่มใช้งานที่อยู่ใหม่", "แจ้งเตือน");
+                }
+            }
+        }
+
+        private void ManageForm_Load_1(object sender, EventArgs e)
+        {
+            // 1. โหลดข้อมูลลงตาราง
+            ReloadTable();
+
+            // 2. โชว์ที่อยู่ไฟล์ Database ปัจจุบัน
+            string currentPath = Properties.Settings.Default.DbPath;
+
+            // เช็คว่าถ้ายังไม่เคยเลือก (ค่าว่าง) ให้บอกว่าเป็น Default
+            if (string.IsNullOrEmpty(currentPath))
+            {
+                lblCurrentPath.Text = "ที่เก็บข้อมูล: ค่าเริ่มต้น (ภายในโฟลเดอร์โปรแกรม)";
+            }
+            else
+            {
+                lblCurrentPath.Text = "ที่เก็บข้อมูล: " + currentPath;
+            }
+        }
+
+        private void txtSearch_TextChanged(object sender, EventArgs e)
+        {
+            // ดึงข้อมูลตารางมาไว้ในตัวแปร
+            DataTable dt = (DataTable)dgvUsers.DataSource;
+
+            if (dt != null)
+            {
+                string keyword = txtSearch.Text.Trim();
+
+                // ถ้าช่องว่างเปล่า -> ให้โชว์ข้อมูลทั้งหมด
+                if (string.IsNullOrEmpty(keyword))
+                {
+                    dt.DefaultView.RowFilter = "";
+                }
+                // ถ้ามีข้อความ -> ให้กรองหา (ทะเบียน หรือ RFID หรือ ชื่อเจ้าของ)
+                else
+                {
+                    // ใช้คำสั่ง LIKE '%...%' เพื่อหาข้อความที่ "มีคำนี้ปนอยู่"
+                    dt.DefaultView.RowFilter = string.Format(
+                        "plate_number LIKE '%{0}%' OR rfid_tag LIKE '%{0}%' OR owner_name LIKE '%{0}%'",
+                        keyword
+                    );
+                }
+            }
+        }
     }
 }
