@@ -143,5 +143,26 @@ namespace SmartGateLPR1
             return dt;
         }
 
+        // ฟังก์ชันสำหรับค้นหาข้อมูลจากเลข RFID (ใช้ในหน้า Form1)
+        public DataTable GetUserByTag(string tag)
+        {
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = "SELECT * FROM users WHERE rfid_tag = @tag";
+                using (SQLiteCommand cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@tag", tag);
+
+                    using (SQLiteDataAdapter da = new SQLiteDataAdapter(cmd))
+                    {
+                        DataTable dt = new DataTable();
+                        da.Fill(dt);
+                        return dt; // ส่งคืนผลลัพธ์ (ถ้าเจอจะมี 1 แถว, ไม่เจอคือว่างเปล่า)
+                    }
+                }
+            }
+        }
+
     }
 }

@@ -28,6 +28,7 @@
         /// </summary>
         private void InitializeComponent()
         {
+            components = new System.ComponentModel.Container();
             pbCamera1 = new PictureBox();
             btnStartCamera = new Button();
             txtRTSP = new TextBox();
@@ -42,9 +43,18 @@
             label2 = new Label();
             btnOpenManage = new Button();
             txtRFIDInput2 = new TextBox();
+            txtSimulateRFID = new TextBox();
+            lblStatus = new Label();
+            lblShowPlate = new Label();
+            lblShowName = new Label();
+            picGate = new PictureBox();
+            timerGate = new System.Windows.Forms.Timer(components);
+            btnScan = new Button();
+            lblResult = new Label();
             ((System.ComponentModel.ISupportInitialize)pbCamera1).BeginInit();
             ((System.ComponentModel.ISupportInitialize)pbCamera2).BeginInit();
             groupBox1.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)picGate).BeginInit();
             SuspendLayout();
             // 
             // pbCamera1
@@ -164,7 +174,7 @@
             // 
             // btnOpenManage
             // 
-            btnOpenManage.Location = new Point(691, 682);
+            btnOpenManage.Location = new Point(1216, 700);
             btnOpenManage.Name = "btnOpenManage";
             btnOpenManage.Size = new Size(90, 23);
             btnOpenManage.TabIndex = 16;
@@ -174,10 +184,78 @@
             // 
             // txtRFIDInput2
             // 
-            txtRFIDInput2.Location = new Point(467, 610);
+            txtRFIDInput2.Location = new Point(12, 556);
             txtRFIDInput2.Name = "txtRFIDInput2";
             txtRFIDInput2.Size = new Size(238, 23);
             txtRFIDInput2.TabIndex = 17;
+            // 
+            // txtSimulateRFID
+            // 
+            txtSimulateRFID.Location = new Point(548, 601);
+            txtSimulateRFID.Name = "txtSimulateRFID";
+            txtSimulateRFID.Size = new Size(144, 23);
+            txtSimulateRFID.TabIndex = 18;
+            txtSimulateRFID.KeyDown += txtSimulateRFID_KeyDown;
+            // 
+            // lblStatus
+            // 
+            lblStatus.AutoSize = true;
+            lblStatus.Location = new Point(560, 722);
+            lblStatus.Name = "lblStatus";
+            lblStatus.Size = new Size(38, 15);
+            lblStatus.TabIndex = 19;
+            lblStatus.Text = "label3";
+            // 
+            // lblShowPlate
+            // 
+            lblShowPlate.AutoSize = true;
+            lblShowPlate.Location = new Point(560, 644);
+            lblShowPlate.Name = "lblShowPlate";
+            lblShowPlate.Size = new Size(38, 15);
+            lblShowPlate.TabIndex = 20;
+            lblShowPlate.Text = "label3";
+            // 
+            // lblShowName
+            // 
+            lblShowName.AutoSize = true;
+            lblShowName.Location = new Point(560, 676);
+            lblShowName.Name = "lblShowName";
+            lblShowName.Size = new Size(38, 15);
+            lblShowName.TabIndex = 21;
+            lblShowName.Text = "label4";
+            // 
+            // picGate
+            // 
+            picGate.BackColor = Color.Red;
+            picGate.Location = new Point(758, 604);
+            picGate.Name = "picGate";
+            picGate.Size = new Size(100, 50);
+            picGate.TabIndex = 22;
+            picGate.TabStop = false;
+            // 
+            // timerGate
+            // 
+            timerGate.Tick += timerGate_Tick;
+            // 
+            // btnScan
+            // 
+            btnScan.Location = new Point(1044, 632);
+            btnScan.Name = "btnScan";
+            btnScan.Size = new Size(111, 23);
+            btnScan.TabIndex = 23;
+            btnScan.Text = "ตรวจสอบป้ายทะเบียน";
+            btnScan.UseVisualStyleBackColor = true;
+            btnScan.Click += btnScan_Click;
+            // 
+            // lblResult
+            // 
+            lblResult.AutoSize = true;
+            lblResult.Location = new Point(1044, 601);
+            lblResult.Name = "lblResult";
+            lblResult.Size = new Size(38, 15);
+            lblResult.TabIndex = 24;
+            lblResult.Text = "label3";
+            lblResult.Click += label3_Click_1;
             // 
             // btnDisconnectRFID
             // 
@@ -185,6 +263,13 @@
             AutoScaleMode = AutoScaleMode.Font;
             BackgroundImageLayout = ImageLayout.Center;
             ClientSize = new Size(1398, 814);
+            Controls.Add(lblResult);
+            Controls.Add(btnScan);
+            Controls.Add(picGate);
+            Controls.Add(lblShowName);
+            Controls.Add(lblShowPlate);
+            Controls.Add(lblStatus);
+            Controls.Add(txtSimulateRFID);
             Controls.Add(txtRFIDInput2);
             Controls.Add(btnOpenManage);
             Controls.Add(label2);
@@ -202,6 +287,7 @@
             ((System.ComponentModel.ISupportInitialize)pbCamera2).EndInit();
             groupBox1.ResumeLayout(false);
             groupBox1.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)picGate).EndInit();
             ResumeLayout(false);
             PerformLayout();
         }
@@ -222,5 +308,13 @@
         private Label label2;
         private Button btnOpenManage;
         private TextBox txtRFIDInput2;
+        private TextBox txtSimulateRFID;
+        private Label lblStatus;
+        private Label lblShowPlate;
+        private Label lblShowName;
+        private PictureBox picGate;
+        private System.Windows.Forms.Timer timerGate;
+        private Button btnScan;
+        private Label lblResult;
     }
 }

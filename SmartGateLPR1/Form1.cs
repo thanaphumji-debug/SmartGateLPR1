@@ -3,11 +3,14 @@ using OpenCvSharp.Extensions;
 using SmartGateLPR;
 using SmartGateLPR1;
 using System;
+using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.Net.Sockets; // สำหรับ TCP
 using System.Text;        // สำหรับแปลง bytes เป็น string
 using System.Threading;
 using System.Windows.Forms;
+using Newtonsoft.Json;
 
 namespace SmartGateLPR1
 {
@@ -21,6 +24,8 @@ namespace SmartGateLPR1
         private SimpleTelnet rfidTelnet;
         private NetworkStream rfidStream;
         private Thread rfidThread;
+        private System.Windows.Forms.Timer timerAutoLPR; // ตัวนับเวลาสำหรับส่งภาพไปตรวจ
+        private bool isProcessingLPR = false; // ตัวเช็คว่า Python กำลังทำงานอยู่ไหม (กันงานชนกัน)
 
         private bool isRfidRunning = false;
         private bool isCam1Running = false;
@@ -33,6 +38,72 @@ namespace SmartGateLPR1
             InitializeComponent();
             try { db = new DatabaseHelper(); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
+        }
+
+        // --- Class สำหรับรับค่าจาก Python ---
+        public class LprData
+        {
+            public string text { get; set; }      // เลขทะเบียน
+            public string raw_text { get; set; }  // ค่าดิบ
+            public double confidence { get; set; } // ความมั่นใจ
+        }
+
+        // ฟังก์ชันสำหรับเรียก Python ให้ช่วยอ่านรูป
+        private string RunPythonLPR(string imagePath)
+        {
+            // 1. ตั้งค่า process
+            ProcessStartInfo start = new ProcessStartInfo();
+            start.FileName = "python"; // หรือใส่ path เต็มของ python.exe ถ้ามันหาไม่เจอ
+
+            // ใส่ชื่อไฟล์ python script ของเรา และ path รูปที่จะให้อ่าน
+            // ** อย่าลืมแก้ path ของไฟล์ .py ให้ตรงกับที่คุณเซฟไว้นะครับ **
+            string pythonScriptPath = @"C:\Users\YOURNAME\Desktop\lpr_service.py";
+
+            start.Arguments = string.Format("\"{0}\" \"{1}\"", pythonScriptPath, imagePath);
+            start.UseShellExecute = false;
+            start.RedirectStandardOutput = true; // ดึงค่าที่ Python สั่ง print()
+            start.CreateNoWindow = true; // ไม่ต้องเด้งจอดำๆ ขึ้นมา
+            start.StandardOutputEncoding = System.Text.Encoding.UTF8; // อ่านภาษาไทยให้ออก
+
+            // 2. สั่งรัน
+            using (Process process = Process.Start(start))
+            {
+                // อ่านผลลัพธ์ที่ Python ส่งกลับมา
+                using (StreamReader reader = process.StandardOutput)
+                {
+                    string result = reader.ReadToEnd();
+                    return result.Trim(); // ส่งเลขทะเบียนกลับไป
+                }
+            }
+        }
+
+        // ฟังก์ชันสำหรับเรียก Python
+        private string RunPythonScript(string cmd, string args)
+        {
+            ProcessStartInfo start = new ProcessStartInfo();
+            start.FileName = cmd; // path ของ python.exe
+            start.Arguments = args; // path ของไฟล์ .py และ รูปภาพ
+            start.UseShellExecute = false;
+            start.RedirectStandardOutput = true; // ดักจับค่าที่ Python พิมพ์ออกมา
+            start.RedirectStandardError = true;  // ดักจับ Error
+            start.CreateNoWindow = true; // ไม่ต้องโชว์จอดำ
+            start.StandardOutputEncoding = System.Text.Encoding.UTF8; // รองรับภาษาไทย
+            start.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+
+            using (Process process = Process.Start(start))
+            {
+                string result = process.StandardOutput.ReadToEnd(); // อ่านค่า JSON
+                string error = process.StandardError.ReadToEnd(); // อ่าน Error (ถ้ามี)
+                process.WaitForExit();
+
+                if (!string.IsNullOrEmpty(error))
+                {
+                    // ถ้ามี Error จากฝั่ง Python ให้โชว์ใน Output ของ VS
+                    System.Diagnostics.Debug.WriteLine("Python Error: " + error);
+                }
+
+                return result; // ส่งค่า JSON กลับไปให้โปรแกรมหลัก
+            }
         }
 
         // --- 2. ปุ่มเปิดกล้อง (สั่งเปิดทั้ง 2 ตัวพร้อมกัน) ---
@@ -175,7 +246,7 @@ namespace SmartGateLPR1
             if (rfidThread != null && rfidThread.IsAlive) rfidThread.Join(200);
         }
 
-        
+
 
         private void groupBox1_Enter(object sender, EventArgs e)
         {
@@ -353,6 +424,159 @@ namespace SmartGateLPR1
 
             // สั่งให้โชว์แบบ Dialog (คือต้องปิดหน้านั้นก่อน ถึงจะกลับมาหน้าหลักได้)
             frm.ShowDialog();
+        }
+
+        private void txtSimulateRFID_KeyDown(object sender, KeyEventArgs e)
+        {
+            // เช็คว่าปุ่มที่กด คือปุ่ม Enter หรือไม่?
+            if (e.KeyCode == Keys.Enter)
+            {
+                string id = txtSimulateRFID.Text.Trim(); // รับค่าเลขบัตร
+
+                // สั่งค้นหาใน Database
+                DataTable dt = db.GetUserByTag(id);
+
+                if (dt.Rows.Count > 0) // ถ้าเจอข้อมูล (มากกว่า 0 แถว)
+                {
+                    // ดึงข้อมูลแถวแรกมาโชว์
+                    string plate = dt.Rows[0]["plate_number"].ToString();
+                    string name = dt.Rows[0]["owner_name"].ToString();
+
+                    // 1. โชว์ข้อมูล
+                    lblShowPlate.Text = plate;
+                    lblShowName.Text = name;
+                    lblStatus.Text = "อนุญาตให้ผ่าน (Access Granted)";
+                    lblStatus.ForeColor = Color.Green;
+
+                    timerGate.Interval = 3000; // ตั้งเวลา 3000 ms = 3 วินาที
+                    timerGate.Start();         // เริ่มนับถอยหลัง!
+
+                    // 2. เปลี่ยนสีไม้กั้นเป็นเขียว (เปิด)
+                    picGate.BackColor = Color.LimeGreen;
+                }
+                else // ถ้าไม่เจอข้อมูล
+                {
+                    // แจ้งเตือน
+                    lblShowPlate.Text = "-";
+                    lblShowName.Text = "-";
+                    lblStatus.Text = "ไม่พบข้อมูล (Access Denied)";
+                    lblStatus.ForeColor = Color.Red;
+
+                    // เปลี่ยนสีไม้กั้นเป็นแดง (ปิด)
+                    picGate.BackColor = Color.Red;
+                }
+
+                // เคลียร์ช่องให้พร้อมสแกนคนต่อไป
+                txtSimulateRFID.Clear();
+
+                // กันเสียง ติ๊ง! เวลาด Enter
+                e.SuppressKeyPress = true;
+            }
+        }
+
+        private void timerGate_Tick(object sender, EventArgs e)
+        {
+            // 1. หยุดจับเวลา (เดี๋ยวทำงานซ้ำ)
+            timerGate.Stop();
+
+            // 2. เปลี่ยนสีกลับเป็นสีแดง (ปิดไม้กั้น)
+            picGate.BackColor = Color.Red;
+
+            // 3. รีเซ็ตสถานะเป็น "พร้อมใช้งาน"
+            lblStatus.Text = "พร้อมใช้งาน (Ready)";
+            lblStatus.ForeColor = Color.Blue; // หรือสีดำตามชอบ
+
+            // 4. (ออพชั่นเสริม) เคลียร์ชื่อกับทะเบียนออกด้วยก็ได้
+            lblShowPlate.Text = "-";
+            lblShowName.Text = "-";
+        }
+
+        private void label3_Click_1(object sender, EventArgs e)
+        {
+
+        }
+
+        // --- ฟังก์ชันเรียก Python (Engine) ---
+        private string RunPythonScript(string imagePath)
+        {
+            // เช็ค Path ให้ชัวร์นะครับ
+            string pythonExe = @"C:\Users\Gigabyte_2\AppData\Local\Programs\Python\Python310\python.exe";
+            string scriptPath = @"C:\Users\Gigabyte_2\Desktop\lpr_service.py";
+
+            ProcessStartInfo start = new ProcessStartInfo();
+            start.FileName = pythonExe;
+            start.Arguments = $"\"{scriptPath}\" \"{imagePath}\"";
+            start.UseShellExecute = false;
+            start.RedirectStandardOutput = true;
+            start.RedirectStandardError = true;
+            start.CreateNoWindow = true; // ซ่อนจอดำ
+            start.StandardOutputEncoding = System.Text.Encoding.UTF8; // อ่านภาษาไทยออก
+
+            using (Process process = Process.Start(start))
+            {
+                string result = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+                return result; // ส่งค่า JSON กลับไป
+            }
+        }
+
+        private void btnScan_Click(object sender, EventArgs e)
+        {
+            // 1. เปลี่ยนหน้าตาปุ่มให้รู้ว่าทำงานอยู่
+            btnScan.Text = "กำลังประมวลผล...";
+            btnScan.Enabled = false;
+            lblResult.Text = "รอสักครู่...";
+            lblResult.ForeColor = Color.Gray;
+
+            try
+            {
+                // รูปที่จะทดสอบ (เดี๋ยวอนาคตเราค่อยเปลี่ยนเป็นรูปจากกล้อง)
+                string imagePath = @"C:\Users\Gigabyte_2\Desktop\test.jpg";
+
+                // 2. เรียก Python
+                string jsonResult = RunPythonScript(imagePath);
+
+                // --- แทรกบรรทัดนี้ เพื่อดูว่า Python ส่งอะไรกลับมา ---
+                MessageBox.Show("ค่าที่ได้จาก Python:\n" + jsonResult);
+
+                // 3. แปลงค่า JSON
+                try
+                {
+                    var plates = JsonConvert.DeserializeObject<List<LprData>>(jsonResult);
+
+                    if (plates != null && plates.Count > 0)
+                    {
+                        // *** เจอทะเบียน! ***
+                        string plateNumber = plates[0].text;
+                        lblResult.Text = plateNumber;
+                        lblResult.ForeColor = Color.Green; // สีเขียว = ผ่าน
+
+                        MessageBox.Show($"อ่านได้: {plateNumber}\nความมั่นใจ: {plates[0].confidence * 100:0.00}%", "สำเร็จ!");
+                    }
+                    else
+                    {
+                        // ไม่เจอ
+                        lblResult.Text = "ไม่พบป้ายทะเบียน";
+                        lblResult.ForeColor = Color.Red;
+                    }
+                }
+                catch
+                {
+                    // กรณี Python ส่ง Error มา หรือไม่ใช่ JSON
+                    lblResult.Text = "Error: อ่านค่าไม่ได้";
+                    MessageBox.Show(jsonResult, "ผลลัพธ์จาก Python (Raw)");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("C# Error: " + ex.Message);
+            }
+            finally
+            {
+                // คืนค่าปุ่มกลับสู่สภาพเดิม
+                btnScan.Text = "อ่านป้ายทะเบียน";
+                btnScan.Enabled = true;
+            }
         }
     }
 }
