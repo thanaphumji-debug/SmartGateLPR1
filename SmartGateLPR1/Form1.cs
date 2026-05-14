@@ -578,5 +578,7 @@ namespace SmartGateLPR1
                 btnScan.Enabled = true;
             }
         }
+
+        
     }
 }
