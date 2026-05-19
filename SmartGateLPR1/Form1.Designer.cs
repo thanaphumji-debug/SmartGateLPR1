@@ -51,6 +51,7 @@
             timerGate = new System.Windows.Forms.Timer(components);
             btnScan = new Button();
             lblResult = new Label();
+            lblLicensePlate = new Label();
             ((System.ComponentModel.ISupportInitialize)pbCamera1).BeginInit();
             ((System.ComponentModel.ISupportInitialize)pbCamera2).BeginInit();
             groupBox1.SuspendLayout();
@@ -66,7 +67,6 @@
             pbCamera1.SizeMode = PictureBoxSizeMode.Zoom;
             pbCamera1.TabIndex = 0;
             pbCamera1.TabStop = false;
-            pbCamera1.Click += pbCamera1_Click;
             // 
             // btnStartCamera
             // 
@@ -273,12 +273,23 @@
             lblResult.Text = "label3";
             lblResult.Click += label3_Click_1;
             // 
+            // lblLicensePlate
+            // 
+            lblLicensePlate.AutoSize = true;
+            lblLicensePlate.Location = new Point(412, 706);
+            lblLicensePlate.Name = "lblLicensePlate";
+            lblLicensePlate.Size = new Size(74, 20);
+            lblLicensePlate.TabIndex = 25;
+            lblLicensePlate.Text = "เลขทะเบียน";
+            lblLicensePlate.Click += label3_Click_2;
+            // 
             // btnDisconnectRFID
             // 
             AutoScaleDimensions = new SizeF(8F, 20F);
             AutoScaleMode = AutoScaleMode.Font;
             BackgroundImageLayout = ImageLayout.Center;
             ClientSize = new Size(1598, 1055);
+            Controls.Add(lblLicensePlate);
             Controls.Add(lblResult);
             Controls.Add(btnScan);
             Controls.Add(picGate);
@@ -333,5 +344,6 @@
         private System.Windows.Forms.Timer timerGate;
         private Button btnScan;
         private Label lblResult;
+        private Label lblLicensePlate;
     }
 }

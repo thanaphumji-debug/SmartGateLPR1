@@ -1,53 +1,70 @@
-﻿import cv2
-import sys
+﻿import sys
 import json
-from ultralytics import YOLO
-from paddleocr import PaddleOCR
+import torch
+from transformers import AutoProcessor, AutoModelForImageTextToText
+from peft import PeftModel
+from PIL import Image
 
-# 1. โหลดสมอง AI ทั้ง 2 ตัว
-# YOLOv8n คือตัวที่หาป้ายเก่งและเร็วมาก
-model_detector = YOLO('yolov8n.pt') # หรือใช้โมเดลที่เทรนหาป้ายทะเบียนโดยเฉพาะ
-ocr = PaddleOCR(use_angle_cls=True, lang='th', show_log=False)
+# 1. บังคับ Encoding ให้เป็น UTF-8 เพื่อให้ C# อ่านภาษาไทยได้
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
 
-def process_oblique_view(image_path):
-    # อ่านภาพต้นฉบับ
-    img = cv2.imread(image_path)
-    
-    # --- STEP 1: หาตำแหน่งป้ายทะเบียนด้วย YOLO ---
-    # (ในขั้นตอนนี้ YOLO จะบอกพิกัด x, y, w, h ของป้าย)
-    results = model_detector(img)
-    
-    final_results = []
-    
-    for r in results:
-        boxes = r.boxes
-        for box in boxes:
-            # ตัดภาพ (Crop) เฉพาะตรงที่ AI คิดว่าเป็นป้ายทะเบียน
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cropped_plate = img[y1:y2, x1:x2]
+def process_hurricane_ocr(image_path):
+    try:
+        base_model_name = "scb10x/typhoon-ocr1.5-2b"
+        
+        # 2. โหลด Processor และ Model (ตอนนี้ไฟล์อยู่ในเครื่องคุณแล้ว จะโหลดเร็วขึ้นมาก)
+        processor = AutoProcessor.from_pretrained(base_model_name)
+        base_model = AutoModelForImageTextToText.from_pretrained(
+            base_model_name,
+            torch_dtype=torch.float16,
+            device_map="auto" 
+        )
+
+        # 3. โหลดส่วนเสริม (LoRA) ป้ายทะเบียนไทย
+        model = PeftModel.from_pretrained(base_model, "Rattatammanoon/hurricane-ocr-tlpr-v1-LoRA")
+        model.eval()
+
+        # 4. เปิดรูปภาพ
+        image = Image.open(image_path).convert("RGB")
+
+        # 5. สร้างคำสั่งแบบใหม่ (บังคับโครงสร้างสำหรับ AI รุ่นล่าสุด)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": "อ่านตัวอักษรและตัวเลขบนป้ายทะเบียนนี้:"}
+                ]
+            }
+        ]
+        
+        # ใช้ processor ในการจัดฟอร์แมตคำสั่ง
+        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        
+        # 6. ส่งรูปและคำสั่งให้ AI
+        inputs = processor(text=[prompt], images=[image], return_tensors="pt").to(model.device)
+
+        # 7. ประมวลผล
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, max_new_tokens=50)
             
-            # --- STEP 2: ปรับปรุงภาพ (ทำให้ชัดขึ้นสำหรับมุมเฉียง) ---
-            gray = cv2.cvtColor(cropped_plate, cv2.COLOR_BGR2GRAY)
-            # เพิ่มความคมชัด (Contrast)
-            enhanced = cv2.detailEnhance(gray, sigma_s=10, sigma_r=0.15)
-            
-            # --- STEP 3: ส่งให้อ่านภาษาไทย ---
-            # บันทึกภาพชั่วคราวเพื่อส่งให้ OCR
-            cv2.imwrite('temp_crop.jpg', enhanced)
-            ocr_result = ocr.ocr('temp_crop.jpg', cls=True)
-            
-            if ocr_result[0]:
-                for line in ocr_result[0]:
-                    text = line[1][0]
-                    conf = line[1][1]
-                    if conf > 0.4:
-                        final_results.append({"text": text, "confidence": float(conf)})
-                        
-    return final_results
+            # ตัดเอาเฉพาะคำตอบ ไม่เอาคำสั่งมาโชว์ซ้ำ
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+            generated_texts = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True)
+        
+        result_text = generated_texts[0].strip()
+
+        # จำลองค่า Confidence เนื่องจาก AI แบบข้อความไม่มีค่าตัวเลขนี้
+        return [{"text": result_text, "confidence": 0.99}]
+
+    except Exception as e:
+        return [{"error": str(e)}]
 
 if __name__ == "__main__":
-    # บังคับการส่งค่าเป็น UTF-8 เพื่อ C# จะได้ไม่อ่านเป็นต่างด้าว
-    sys.stdout.reconfigure(encoding='utf-8')
     if len(sys.argv) > 1:
-        img_path = sys.argv[1]
-        print(json.dumps(process_oblique_view(img_path), ensure_ascii=False))
+        image_input = sys.argv[1]
+        final_result = process_hurricane_ocr(image_input)
+        print(json.dumps(final_result, ensure_ascii=False))

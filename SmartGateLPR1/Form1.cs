@@ -1,16 +1,21 @@
-﻿using OpenCvSharp;
+﻿using Newtonsoft.Json;
+using OpenCvSharp;
 using OpenCvSharp.Extensions;
 using SmartGateLPR;
 using SmartGateLPR1;
 using System;
+using System;
 using System.Data;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing;
+using System.Net.Http;
 using System.Net.Sockets; // สำหรับ TCP
 using System.Text;        // สำหรับแปลง bytes เป็น string
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using Newtonsoft.Json;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace SmartGateLPR1
 {
@@ -32,6 +37,15 @@ namespace SmartGateLPR1
         private bool isCam2Running = false;
 
         private DatabaseHelper db;
+
+        // ตัวแปร Global สำหรับรองรับกล้อง 2 ตัว (แยกตาม ID กล้อง)
+        private Rectangle triggerZone = new Rectangle(150, 200, 400, 200);
+        private double triggerThreshold = 20.0;
+        private int cooldownSeconds = 4;
+
+        // เปลี่ยน 2 บรรทัดนี้ให้เป็น Array ขนาด 3 ช่อง (เพื่อใช้ช่อง index 1 และ 2 ให้ตรงกับ ID กล้อง)
+        private Bitmap[] previousZoneImages = new Bitmap[3];
+        private DateTime[] lastCaptureTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
 
         public btnDisconnectRFID()
         {
@@ -168,14 +182,52 @@ namespace SmartGateLPR1
                     {
                         Bitmap image = BitmapConverter.ToBitmap(frame);
 
-                        // อัปเดตภาพไปที่ PictureBox ที่ส่งเข้ามา
-                        if (displayBox.Image != null) displayBox.Image.Dispose();
-
+                        // --- 1. โชว์ภาพสดขึ้นหน้าจอ UI ทันที (ทำทุกเฟรม ภาพจะได้ไม่กระตุก) ---
                         displayBox.Invoke(new Action(() =>
                         {
-                            displayBox.Image = image;
+                            if (displayBox.Image != null) displayBox.Image.Dispose();
+                            displayBox.Image = (Bitmap)image.Clone();
                         }));
+
+                        // --- 2. ระบบ Auto-Trigger เช็คป้ายทะเบียน ---
+                        // 1. เช็ค Cooldown แยกตามกล้องตัวนั้นๆ
+                        if ((DateTime.Now - lastCaptureTimes[camId]).TotalSeconds < cooldownSeconds)
+                        {
+                            image.Dispose();
+                            continue;
+                        }
+
+                        // 2. ตัดภาพ (Crop) เอาเฉพาะในกรอบ Trigger Zone ที่เราตีเส้นไว้
+                        Bitmap currentZoneImage = image.Clone(triggerZone, image.PixelFormat);
+
+                        // เช็คภาพพื้นหลังแยกตามกล้อง
+                        if (previousZoneImages[camId] == null)
+                        {
+                            previousZoneImages[camId] = currentZoneImage;
+                            image.Dispose();
+                            continue;
+                        }
+
+                        // คำนวณความต่าง โดยเทียบกับภาพก่อนหน้าของกล้องตัวเองเท่านั้น!
+                        double diffPercentage = CalculateDifference(previousZoneImages[camId], currentZoneImage);
+
+                        // ถ้ามีการเปลี่ยนแปลงเกินเกณฑ์ (มีรถวิ่งเข้ากล้องตัวนั้น)
+                        if (diffPercentage >= triggerThreshold)
+                        {
+                            lastCaptureTimes[camId] = DateTime.Now; // เริ่มนับ Cooldown ของกล้องตัวนี้
+
+                            // ส่งรูปเต็มไปให้ AI อ่าน
+                            Bitmap frameToSend = new Bitmap(image);
+                            Task.Run(() => SendToAI(frameToSend));
+                        }
+
+                        // อัปเดตภาพเก่าเก็บไว้เทียบในเฟรมถัดไป (ของใครของมัน)
+                        previousZoneImages[camId].Dispose();
+                        previousZoneImages[camId] = currentZoneImage;
+
+                        image.Dispose();
                     }
+                    
                 }
                 catch
                 {
@@ -579,6 +631,63 @@ namespace SmartGateLPR1
             }
         }
 
-        
+        private void label3_Click_2(object sender, EventArgs e)
+        {
+
+        }
+
+        // ฟังก์ชันสำหรับส่งรูปไปให้ Python API
+        private async Task SendToAI(Bitmap bitmap)
+        {
+            try
+            {
+                using (var client = new HttpClient())
+                using (var ms = new MemoryStream())
+                {
+                    // 1. แปลงรูปจากกล้องเป็น Byte Array
+                    bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    var content = new MultipartFormDataContent();
+                    content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
+
+                    // 2. ยิงไปที่ Python API ที่เราเปิดรอไว้
+                    var response = await client.PostAsync("http://localhost:5000/predict", content);
+                    var jsonResponse = await response.Content.ReadAsStringAsync();
+
+                    // 3. แกะคำตอบ JSON มาโชว์บนหน้าจอ
+                    dynamic result = JsonConvert.DeserializeObject(jsonResponse);
+                    if (result.status == "success")
+                    {
+                        this.Invoke((MethodInvoker)delegate {
+                            lblLicensePlate.Text = result.text; // แสดงเลขทะเบียนที่หน้าจอ!
+                            lblLicensePlate.ForeColor = Color.Green;
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error: " + ex.Message);
+            }
+        }
+
+        // ฟังก์ชันคำนวณความต่างของพิกเซล
+        private double CalculateDifference(Bitmap bmp1, Bitmap bmp2)
+        {
+            int diffCount = 0;
+            for (int y = 0; y < bmp1.Height; y += 5)
+            {
+                for (int x = 0; x < bmp1.Width; x += 5)
+                {
+                    Color c1 = bmp1.GetPixel(x, y);
+                    Color c2 = bmp2.GetPixel(x, y);
+                    if (Math.Abs(c1.R - c2.R) + Math.Abs(c1.G - c2.G) + Math.Abs(c1.B - c2.B) > 50)
+                    {
+                        diffCount++;
+                    }
+                }
+            }
+            int checkedPixels = (bmp1.Width / 5) * (bmp1.Height / 5);
+            return ((double)diffCount / checkedPixels) * 100;
+        }
     }
 }
