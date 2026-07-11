@@ -548,146 +548,91 @@ namespace SmartGateLPR1
 
         }
 
-        // --- ฟังก์ชันเรียก Python (Engine) ---
-        private string RunPythonScript(string imagePath)
-        {
-            // เช็ค Path ให้ชัวร์นะครับ
-            string pythonExe = @"C:\Users\Gigabyte_2\AppData\Local\Programs\Python\Python310\python.exe";
-            string scriptPath = @"C:\Users\Gigabyte_2\Desktop\lpr_service.py";
-
-            ProcessStartInfo start = new ProcessStartInfo();
-            start.FileName = pythonExe;
-            start.Arguments = $"\"{scriptPath}\" \"{imagePath}\"";
-            start.UseShellExecute = false;
-            start.RedirectStandardOutput = true;
-            start.RedirectStandardError = true;
-            start.CreateNoWindow = true; // ซ่อนจอดำ
-            start.StandardOutputEncoding = System.Text.Encoding.UTF8; // อ่านภาษาไทยออก
-
-            using (Process process = Process.Start(start))
-            {
-                string result = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-                return result; // ส่งค่า JSON กลับไป
-            }
-        }
-
-        private void btnScan_Click(object sender, EventArgs e)
-        {
-            // 1. เปลี่ยนหน้าตาปุ่มให้รู้ว่าทำงานอยู่
-            btnScan.Text = "กำลังประมวลผล...";
-            btnScan.Enabled = false;
-            lblResult.Text = "รอสักครู่...";
-            lblResult.ForeColor = Color.Gray;
-
-            try
-            {
-                // รูปที่จะทดสอบ (เดี๋ยวอนาคตเราค่อยเปลี่ยนเป็นรูปจากกล้อง)
-                string imagePath = @"C:\Users\Gigabyte_2\Desktop\test.jpg";
-
-                // 2. เรียก Python
-                string jsonResult = RunPythonScript(imagePath);
-
-                // --- แทรกบรรทัดนี้ เพื่อดูว่า Python ส่งอะไรกลับมา ---
-                MessageBox.Show("ค่าที่ได้จาก Python:\n" + jsonResult);
-
-                // 3. แปลงค่า JSON
-                try
-                {
-                    var plates = JsonConvert.DeserializeObject<List<LprData>>(jsonResult);
-
-                    if (plates != null && plates.Count > 0)
-                    {
-                        // *** เจอทะเบียน! ***
-                        string plateNumber = plates[0].text;
-                        lblResult.Text = plateNumber;
-                        lblResult.ForeColor = Color.Green; // สีเขียว = ผ่าน
-
-                        MessageBox.Show($"อ่านได้: {plateNumber}\nความมั่นใจ: {plates[0].confidence * 100:0.00}%", "สำเร็จ!");
-                    }
-                    else
-                    {
-                        // ไม่เจอ
-                        lblResult.Text = "ไม่พบป้ายทะเบียน";
-                        lblResult.ForeColor = Color.Red;
-                    }
-                }
-                catch
-                {
-                    // กรณี Python ส่ง Error มา หรือไม่ใช่ JSON
-                    lblResult.Text = "Error: อ่านค่าไม่ได้";
-                    MessageBox.Show(jsonResult, "ผลลัพธ์จาก Python (Raw)");
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("C# Error: " + ex.Message);
-            }
-            finally
-            {
-                // คืนค่าปุ่มกลับสู่สภาพเดิม
-                btnScan.Text = "อ่านป้ายทะเบียน";
-                btnScan.Enabled = true;
-            }
-        }
-
         private void label3_Click_2(object sender, EventArgs e)
         {
 
         }
 
-        // ฟังก์ชันสำหรับส่งรูปไปให้ Python API
+        // 💡 1. เพิ่มตัวแปรเช็คสถานะ AI ไว้ (สำคัญมาก ป้องกัน RAM ล้น)
+        private bool isAIProcessing = false;
+
+        // ✅ 3. ฟังก์ชันส่งรูปไปให้ Python API (ฉบับแก้ RAM ระเบิด 30GB)
         private async Task SendToAI(Bitmap bitmap)
         {
+            // ถ้า AI ยังประมวลผลรูปเก่าไม่เสร็จ ให้โยนรูปใหม่ทิ้งทันที! ไม่ต้องรอคิวให้หนัก RAM
+            if (isAIProcessing)
+            {
+                bitmap.Dispose();
+                return;
+            }
+
+            isAIProcessing = true; // ล็อกคิวบอกว่า AI กำลังทำงาน
+
             try
             {
                 using (var client = new HttpClient())
-                using (var ms = new MemoryStream())
                 {
-                    // 1. แปลงรูปจากกล้องเป็น Byte Array
-                    bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
-                    var content = new MultipartFormDataContent();
-                    content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
+                    client.Timeout = TimeSpan.FromSeconds(15); // ตั้งเวลาเผื่อ AI ค้าง จะได้ตัดจบ
 
-                    // 2. ยิงไปที่ Python API ที่เราเปิดรอไว้
-                    var response = await client.PostAsync("http://localhost:5000/predict", content);
-                    var jsonResponse = await response.Content.ReadAsStringAsync();
-
-                    // 3. แกะคำตอบ JSON มาโชว์บนหน้าจอ
-                    dynamic result = JsonConvert.DeserializeObject(jsonResponse);
-                    if (result.status == "success")
+                    using (var ms = new MemoryStream())
                     {
-                        this.Invoke((MethodInvoker)delegate {
-                            lblLicensePlate.Text = result.text; // แสดงเลขทะเบียนที่หน้าจอ!
-                            lblLicensePlate.ForeColor = Color.Green;
-                        });
+                        bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        var content = new MultipartFormDataContent();
+                        content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
+
+                        // ยิงไปที่ Python API
+                        var response = await client.PostAsync("http://localhost:5000/predict", content);
+                        var jsonResponse = await response.Content.ReadAsStringAsync();
+
+                        // แกะคำตอบ JSON มาโชว์บนหน้าจอ
+                        dynamic result = JsonConvert.DeserializeObject(jsonResponse);
+                        if (result != null && result.status == "success")
+                        {
+                            this.Invoke((MethodInvoker)delegate {
+                                lblLicensePlate.Text = result.text; // แสดงเลขทะเบียนที่หน้าจอ!
+                                lblLicensePlate.ForeColor = Color.Green;
+                            });
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error: " + ex.Message);
+                Console.WriteLine("API Error: " + ex.Message);
+            }
+            finally
+            {
+                isAIProcessing = false; // ปลดล็อกคิวรับรูปใหม่
+                bitmap.Dispose();       // 💡 เคลียร์ขยะรูปนี้ออกจาก RAM ทันที
             }
         }
 
-        // ฟังก์ชันคำนวณความต่างของพิกเซล
-        private double CalculateDifference(Bitmap bmp1, Bitmap bmp2)
+        // ✅ 4. ฟังก์ชันคำนวณความต่างของพิกเซล (ฉบับประหยัด CPU ไม่ค้าง)
+        private double CalculateDifference(Bitmap img1, Bitmap img2)
         {
-            int diffCount = 0;
-            for (int y = 0; y < bmp1.Height; y += 5)
+            // 💡 ย่อภาพเป็น 100x100 ก่อนคำนวณ เพื่อไม่ให้ CPU โหลดหนักตอนเจอกล้อง 2K
+            using (Bitmap bmp1 = new Bitmap(img1, new System.Drawing.Size(100, 100)))
+            using (Bitmap bmp2 = new Bitmap(img2, new System.Drawing.Size(100, 100)))
             {
-                for (int x = 0; x < bmp1.Width; x += 5)
+                int diffCount = 0;
+                int totalPixels = bmp1.Width * bmp1.Height;
+
+                for (int y = 0; y < bmp1.Height; y++)
                 {
-                    Color c1 = bmp1.GetPixel(x, y);
-                    Color c2 = bmp2.GetPixel(x, y);
-                    if (Math.Abs(c1.R - c2.R) + Math.Abs(c1.G - c2.G) + Math.Abs(c1.B - c2.B) > 50)
+                    for (int x = 0; x < bmp1.Width; x++)
                     {
-                        diffCount++;
+                        Color c1 = bmp1.GetPixel(x, y);
+                        Color c2 = bmp2.GetPixel(x, y);
+
+                        // ดูความต่างของสี
+                        if (Math.Abs(c1.R - c2.R) + Math.Abs(c1.G - c2.G) + Math.Abs(c1.B - c2.B) > 60)
+                        {
+                            diffCount++;
+                        }
                     }
                 }
+                return ((double)diffCount / totalPixels) * 100.0;
             }
-            int checkedPixels = (bmp1.Width / 5) * (bmp1.Height / 5);
-            return ((double)diffCount / checkedPixels) * 100;
         }
     }
 }
