@@ -15,7 +15,6 @@ using System.Text;        // สำหรับแปลง bytes เป็น s
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace SmartGateLPR1
 {
@@ -41,11 +40,21 @@ namespace SmartGateLPR1
         // ตัวแปร Global สำหรับรองรับกล้อง 2 ตัว (แยกตาม ID กล้อง)
         private Rectangle triggerZone = new Rectangle(150, 200, 400, 200);
         private double triggerThreshold = 20.0;
-        private int cooldownSeconds = 4;
+        private int cooldownSeconds = 1;
 
         // เปลี่ยน 2 บรรทัดนี้ให้เป็น Array ขนาด 3 ช่อง (เพื่อใช้ช่อง index 1 และ 2 ให้ตรงกับ ID กล้อง)
         private Bitmap[] previousZoneImages = new Bitmap[3];
         private DateTime[] lastCaptureTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+
+        private Rectangle[] latestPlateBox = new Rectangle[3];
+        private bool[] hasPlateBox = new bool[3];
+        private string[] latestPlateText = new string[] { "", "", "" };
+        private DateTime[] latestBoxTime = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+        private DateTime[] lastDetectTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+        private bool[] isDetecting = new bool[3];
+        private readonly object boxLock = new object();
+        private int detectIntervalMs = 200;
+        private int boxHoldMs = 1500;
 
         public btnDisconnectRFID()
         {
@@ -183,11 +192,23 @@ namespace SmartGateLPR1
                         Bitmap image = BitmapConverter.ToBitmap(frame);
 
                         // --- 1. โชว์ภาพสดขึ้นหน้าจอ UI ทันที (ทำทุกเฟรม ภาพจะได้ไม่กระตุก) ---
+                        Bitmap displayImage = (Bitmap)image.Clone();
+                        DrawPlateOverlay(displayImage, camId);
                         displayBox.Invoke(new Action(() =>
                         {
                             if (displayBox.Image != null) displayBox.Image.Dispose();
-                            displayBox.Image = (Bitmap)image.Clone();
+                            displayBox.Image = displayImage;
                         }));
+
+                        // --- 1.5 อัปเดตกรอบแดงให้ตามป้าย: เรียก /detect ทุก ~detectIntervalMs ---
+                        if (!isDetecting[camId] &&
+                            (DateTime.Now - lastDetectTimes[camId]).TotalMilliseconds >= detectIntervalMs)
+                        {
+                            lastDetectTimes[camId] = DateTime.Now;
+                            Bitmap detectFrame = new Bitmap(image);
+                            Task.Run(() => DetectBox(detectFrame, camId));
+                        }
+
 
                         // --- 2. ระบบ Auto-Trigger เช็คป้ายทะเบียน ---
                         // 1. เช็ค Cooldown แยกตามกล้องตัวนั้นๆ
@@ -218,7 +239,7 @@ namespace SmartGateLPR1
 
                             // ส่งรูปเต็มไปให้ AI อ่าน
                             Bitmap frameToSend = new Bitmap(image);
-                            Task.Run(() => SendToAI(frameToSend));
+                            Task.Run(() => SendToAI(frameToSend, camId));
                         }
 
                         // อัปเดตภาพเก่าเก็บไว้เทียบในเฟรมถัดไป (ของใครของมัน)
@@ -557,7 +578,7 @@ namespace SmartGateLPR1
         private bool isAIProcessing = false;
 
         // ✅ 3. ฟังก์ชันส่งรูปไปให้ Python API (ฉบับแก้ RAM ระเบิด 30GB)
-        private async Task SendToAI(Bitmap bitmap)
+        private async Task SendToAI(Bitmap bitmap, int camId)
         {
             // ถ้า AI ยังประมวลผลรูปเก่าไม่เสร็จ ให้โยนรูปใหม่ทิ้งทันที! ไม่ต้องรอคิวให้หนัก RAM
             if (isAIProcessing)
@@ -588,10 +609,26 @@ namespace SmartGateLPR1
                         dynamic result = JsonConvert.DeserializeObject(jsonResponse);
                         if (result != null && result.status == "success")
                         {
+                            string plateText = (string)result.text;
+                            string fullText = result.full_text != null ? (string)result.full_text : plateText;
+
                             this.Invoke((MethodInvoker)delegate {
-                                lblLicensePlate.Text = result.text; // แสดงเลขทะเบียนที่หน้าจอ!
+                                lblLicensePlate.Text = fullText;
                                 lblLicensePlate.ForeColor = Color.Green;
                             });
+
+                            lock (boxLock)
+                            {
+                                latestPlateText[camId] = fullText;
+                                if (result.box != null)
+                                {
+                                    int bx1 = (int)result.box[0], by1 = (int)result.box[1];
+                                    int bx2 = (int)result.box[2], by2 = (int)result.box[3];
+                                    latestPlateBox[camId] = new Rectangle(bx1, by1, bx2 - bx1, by2 - by1);
+                                    hasPlateBox[camId] = true;
+                                    latestBoxTime[camId] = DateTime.Now;
+                                }
+                            }
                         }
                     }
                 }
@@ -633,6 +670,79 @@ namespace SmartGateLPR1
                 }
                 return ((double)diffCount / totalPixels) * 100.0;
             }
+        }
+
+        private void DrawPlateOverlay(Bitmap bmp, int camId)
+        {
+            Rectangle box; bool has; string text; DateTime t;
+            lock (boxLock)
+            {
+                has = hasPlateBox[camId]; box = latestPlateBox[camId];
+                text = latestPlateText[camId]; t = latestBoxTime[camId];
+            }
+            if (!has || (DateTime.Now - t).TotalMilliseconds > boxHoldMs) return;
+
+            Rectangle r = Rectangle.Intersect(box, new Rectangle(0, 0, bmp.Width, bmp.Height));
+            if (r.Width <= 0 || r.Height <= 0) return;
+
+            using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(bmp))
+            using (System.Drawing.Pen pen = new System.Drawing.Pen(Color.Red, 3))
+            using (System.Drawing.Font font = new System.Drawing.Font("Tahoma", 14, FontStyle.Bold))
+            {
+                g.DrawRectangle(pen, r);
+                if (!string.IsNullOrEmpty(text))
+                {
+                    SizeF sz = g.MeasureString(text, font);
+                    float ty = r.Y - sz.Height - 2; if (ty < 0) ty = r.Y + 2;
+                    g.FillRectangle(Brushes.Red, r.X, ty, sz.Width, sz.Height);
+                    g.DrawString(text, font, Brushes.White, r.X, ty);
+                }
+            }
+        }
+
+        private async Task DetectBox(Bitmap bitmap, int camId)
+        {
+            isDetecting[camId] = true;
+            try
+            {
+                using (var client = new HttpClient())
+                {
+                    client.Timeout = TimeSpan.FromSeconds(5);
+                    using (var ms = new MemoryStream())
+                    {
+                        bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        var content = new MultipartFormDataContent();
+                        content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
+
+                        var response = await client.PostAsync("http://localhost:5000/detect", content);
+                        var json = await response.Content.ReadAsStringAsync();
+                        dynamic result = JsonConvert.DeserializeObject(json);
+
+                        lock (boxLock)
+                        {
+                            if (result != null && result.status == "success" && result.box != null)
+                            {
+                                int x1 = (int)result.box[0], y1 = (int)result.box[1];
+                                int x2 = (int)result.box[2], y2 = (int)result.box[3];
+                                latestPlateBox[camId] = new Rectangle(x1, y1, x2 - x1, y2 - y1);
+                                hasPlateBox[camId] = true;
+                                latestBoxTime[camId] = DateTime.Now;
+                                // 🎯 เจอป้ายในเฟรม = จังหวะดีที่สุดที่จะอ่าน → สั่งอ่านเลย (แทน motion trigger)
+                                if (!isAIProcessing &&
+                                    (DateTime.Now - lastCaptureTimes[camId]).TotalSeconds >= cooldownSeconds)
+                                {
+                                    lastCaptureTimes[camId] = DateTime.Now;
+                                    Bitmap readFrame = new Bitmap(bitmap);
+                                    Task.Run(() => SendToAI(readFrame, camId));
+                                }
+                            }
+                            else { hasPlateBox[camId] = false; }
+                        }
+                    }
+                }
+            }
+            catch { }
+            finally { isDetecting[camId] = false; bitmap.Dispose(); }
         }
     }
 }
