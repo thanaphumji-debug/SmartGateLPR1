@@ -11,6 +11,7 @@ using System.Drawing;
 using System.Drawing;
 using System.Net.Http;
 using System.Net.Sockets; // สำหรับ TCP
+using System.Reflection.Emit;
 using System.Text;        // สำหรับแปลง bytes เป็น string
 using System.Threading;
 using System.Threading.Tasks;
@@ -56,11 +57,135 @@ namespace SmartGateLPR1
         private int detectIntervalMs = 200;
         private int boxHoldMs = 1500;
 
+        private Panel panelMenu;
+        private Button btnMenu;
+        private System.Windows.Forms.Timer menuTimer;
+        private bool menuOpening = false;
+        private const int MenuWidth = 220;
         public btnDisconnectRFID()
         {
             InitializeComponent();
             try { db = new DatabaseHelper(); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
+            InitSideMenu();              
+            LoadSavedSettings();
+        }
+
+
+        private void InitSideMenu()
+        {
+            // ปุ่ม ☰ มุมบนซ้าย
+            btnMenu = new Button
+            {
+                Text = "☰",
+                Font = new System.Drawing.Font("Segoe UI", 14, FontStyle.Bold),
+                Size = new System.Drawing.Size(44, 36),
+                Location = new System.Drawing.Point(8, 8),
+                FlatStyle = FlatStyle.Flat,
+            };
+            btnMenu.FlatAppearance.BorderSize = 0;
+            btnMenu.Click += (s, e) => ToggleMenu();
+
+            // แผงเมนูซ้าย เริ่มกว้าง 0 (ซ่อนอยู่)
+            panelMenu = new Panel
+            {
+                Width = 0,
+                Dock = DockStyle.Left,
+                BackColor = Color.FromArgb(45, 45, 48),
+            };
+
+            var lblTitle = new System.Windows.Forms.Label
+            {
+                Text = "การตั้งค่าอุปกรณ์",
+                ForeColor = Color.White,
+                Font = new System.Drawing.Font("Tahoma", 11, FontStyle.Bold),
+                Location = new System.Drawing.Point(16, 55),
+                AutoSize = true,
+            };
+            panelMenu.Controls.Add(lblTitle);
+
+            panelMenu.Controls.Add(MakeMenuButton("📷  ตั้งค่ากล้อง", 100, (s, e) =>
+            {
+                ToggleMenu();
+                using (var f = new CameraSettingsForm())
+                    if (f.ShowDialog(this) == DialogResult.OK) LoadSavedSettings();
+            }));
+            panelMenu.Controls.Add(MakeMenuButton("📡  ตั้งค่า RFID", 150, (s, e) =>
+            {
+                ToggleMenu();
+                using (var f = new RfidSettingsForm())
+                    if (f.ShowDialog(this) == DialogResult.OK) LoadSavedSettings();
+            }));
+            panelMenu.Controls.Add(MakeMenuButton("🚧  ตั้งค่าไม้กั้น", 200, (s, e) =>
+            {
+                ToggleMenu();
+                MessageBox.Show("หน้าตั้งค่าไม้กั้น — เดี๋ยวทำตามแบบ CameraSettingsForm");
+            }));
+            panelMenu.Controls.Add(MakeMenuButton("🗂  บันทึกป้ายทะเบียน", 250, (s, e) =>
+            {
+                ToggleMenu();
+                using (var f = new PlateTableForm())
+                    f.ShowDialog(this);
+            }));
+            panelMenu.Controls.Add(MakeMenuButton("💾  ตั้งค่าฐานข้อมูล", 300, (s, e) =>
+            {
+                ToggleMenu();
+                using (var f = new StorageSettingsForm()) f.ShowDialog(this);
+            }));
+
+            Controls.Add(panelMenu);
+            Controls.Add(btnMenu);
+            btnMenu.BringToFront();
+
+            // ตัวทำอนิเมชันสไลด์
+            menuTimer = new System.Windows.Forms.Timer { Interval = 10 };
+            menuTimer.Tick += (s, e) =>
+            {
+                if (menuOpening)
+                {
+                    panelMenu.Width += 25;
+                    if (panelMenu.Width >= MenuWidth) { panelMenu.Width = MenuWidth; menuTimer.Stop(); }
+                }
+                else
+                {
+                    panelMenu.Width -= 25;
+                    if (panelMenu.Width <= 0) { panelMenu.Width = 0; menuTimer.Stop(); }
+                }
+            };
+        }
+
+        private Button MakeMenuButton(string text, int top, EventHandler onClick)
+        {
+            var b = new Button
+            {
+                Text = text,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Size = new System.Drawing.Size(MenuWidth - 20, 40),
+                Location = new System.Drawing.Point(10, top),
+                Font = new System.Drawing.Font("Tahoma", 10),
+            };
+            b.FlatAppearance.BorderSize = 0;
+            b.Click += onClick;
+            return b;
+        }
+
+        private void ToggleMenu()
+        {
+            menuOpening = panelMenu.Width < MenuWidth / 2;
+            panelMenu.BringToFront();
+            btnMenu.BringToFront();
+            menuTimer.Start();
+        }
+
+        private void LoadSavedSettings()
+        {
+            var st = SettingsStore.Load();
+            // ⚠️ เปลี่ยน txtRtsp1 / txtRtsp2 เป็น "ชื่อจริง" ของช่องกรอก RTSP สองช่องในฟอร์มคุณ
+            if (!string.IsNullOrEmpty(st.RtspCamera1)) txtRTSP.Text = st.RtspCamera1;
+            if (!string.IsNullOrEmpty(st.RtspCamera2)) txtRTSP2.Text = st.RtspCamera2;
+            if (!string.IsNullOrEmpty(st.RfidIp)) txtRfidIP.Text = st.RfidIp;
         }
 
         // --- Class สำหรับรับค่าจาก Python ---
@@ -166,11 +291,8 @@ namespace SmartGateLPR1
 
             if (!capture.IsOpened())
             {
-                // ถ้าเชื่อมต่อไม่ได้ ให้แจ้งเตือน (ต้อง Invoke เพราะมาจาก Thread อื่น)
-                this.Invoke(new Action(() =>
-                {
-                    MessageBox.Show($"กล้อง {camId} เชื่อมต่อไม่ได้!");
-                }));
+                
+                ShowNoSignal(displayBox, "❌ ไม่มีการเชื่อมต่อกล้อง");
 
                 // ปิดสถานะตาม ID
                 if (camId == 1) isCam1Running = false;
@@ -248,7 +370,7 @@ namespace SmartGateLPR1
 
                         image.Dispose();
                     }
-                    
+
                 }
                 catch
                 {
@@ -351,8 +473,11 @@ namespace SmartGateLPR1
             // --- กรณีที่ 2: ถ้ายังไม่เชื่อมต่อ (ต้องการเริ่มเชื่อมต่อ) ---
             else
             {
-                string ip = txtRfidIP.Text;
-                int port = 23;
+                var cfg = SettingsStore.Load();
+                string ip = !string.IsNullOrWhiteSpace(cfg.RfidIp) ? cfg.RfidIp : txtRfidIP.Text.Trim();
+                int port = cfg.RfidPort > 0 ? cfg.RfidPort : 23;
+                string rfidUser = string.IsNullOrEmpty(cfg.RfidUser) ? "alien" : cfg.RfidUser;
+                string rfidPass = string.IsNullOrEmpty(cfg.RfidPassword) ? "password" : cfg.RfidPassword;
 
                 lblRfidStatus1.Text = "กำลังเชื่อมต่อ...";
                 lblRfidStatus1.ForeColor = Color.Orange;
@@ -365,7 +490,7 @@ namespace SmartGateLPR1
 
                     if (rfidTelnet.Connect(ip, port))
                     {
-                        bool loginSuccess = rfidTelnet.Login("alien", "password");
+                        bool loginSuccess = rfidTelnet.Login(rfidUser, rfidPass);
 
                         if (loginSuccess)
                         {
@@ -612,7 +737,8 @@ namespace SmartGateLPR1
                             string plateText = (string)result.text;
                             string fullText = result.full_text != null ? (string)result.full_text : plateText;
 
-                            this.Invoke((MethodInvoker)delegate {
+                            this.Invoke((MethodInvoker)delegate
+                            {
                                 lblLicensePlate.Text = fullText;
                                 lblLicensePlate.ForeColor = Color.Green;
                             });
@@ -743,6 +869,28 @@ namespace SmartGateLPR1
             }
             catch { }
             finally { isDetecting[camId] = false; bitmap.Dispose(); }
+        }
+
+        private void txtRTSP_TextChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void ShowNoSignal(PictureBox box, string msg)
+        {
+            Bitmap bmp = new Bitmap(Math.Max(box.Width, 320), Math.Max(box.Height, 240));
+            using (Graphics g = Graphics.FromImage(bmp))
+            using (var font = new System.Drawing.Font("Tahoma", 14, FontStyle.Bold))
+            {
+                g.Clear(Color.Black);
+                SizeF sz = g.MeasureString(msg, font);
+                g.DrawString(msg, font, Brushes.Red, (bmp.Width - sz.Width) / 2, (bmp.Height - sz.Height) / 2);
+            }
+            box.Invoke(new Action(() =>
+            {
+                if (box.Image != null) box.Image.Dispose();
+                box.Image = bmp;
+            }));
         }
     }
 }

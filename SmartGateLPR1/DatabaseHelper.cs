@@ -14,7 +14,7 @@ namespace SmartGateLPR1
         public DatabaseHelper()
         {
             // 1.ดึงค่าที่อยู่ที่บันทึกไว้
-        string savedPath = Properties.Settings.Default.DbPath;
+            string savedPath = SettingsStore.Load().DbLocalPath;
 
             // 2. ถ้ายังไม่เคยเลือก (ค่าว่าง) ให้ใช้ค่าเริ่มต้นคือโฟลเดอร์ปัจจุบัน
             if (string.IsNullOrEmpty(savedPath))
@@ -47,6 +47,24 @@ namespace SmartGateLPR1
                 {
                     cmd.ExecuteNonQuery();
                 }
+
+                EnsureNewColumns(conn);   // ⬅️ เพิ่ม
+            }
+        }
+
+        // เพิ่มคอลัมน์ใหม่ให้ตารางเก่า (รันซ้ำได้ ถ้ามีอยู่แล้วจะข้ามเอง)
+        private void EnsureNewColumns(SQLiteConnection conn)
+        {
+            string[] adds = {
+                "ALTER TABLE users ADD COLUMN plate_letters TEXT",
+                "ALTER TABLE users ADD COLUMN plate_digits TEXT",
+                "ALTER TABLE users ADD COLUMN province TEXT",
+                "ALTER TABLE users ADD COLUMN permission TEXT",
+            };
+            foreach (string a in adds)
+            {
+                try { using (var c = new SQLiteCommand(a, conn)) c.ExecuteNonQuery(); }
+                catch { /* คอลัมน์มีอยู่แล้ว ข้ามไป */ }
             }
         }
 
@@ -62,6 +80,43 @@ namespace SmartGateLPR1
                     cmd.Parameters.AddWithValue("@p", plate);
                     cmd.Parameters.AddWithValue("@r", rfid);
                     cmd.Parameters.AddWithValue("@n", name);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        // เพิ่มรถแบบข้อมูลครบ (ตารางบันทึกทะเบียนใหม่)
+        public void AddUserFull(string letters, string digits, string province,
+                                string permission, string rfid, string ownerName = "")
+        {
+            using (var conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = @"INSERT INTO users
+                    (plate_number, plate_letters, plate_digits, province, permission, rfid_tag, owner_name)
+                    VALUES (@pn, @pl, @pd, @pv, @pm, @r, @n)";
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@pn", letters + digits);  // รวมไว้ให้ LPR เทียบ
+                    cmd.Parameters.AddWithValue("@pl", letters);
+                    cmd.Parameters.AddWithValue("@pd", digits);
+                    cmd.Parameters.AddWithValue("@pv", province);
+                    cmd.Parameters.AddWithValue("@pm", permission);
+                    cmd.Parameters.AddWithValue("@r", rfid);
+                    cmd.Parameters.AddWithValue("@n", ownerName);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        public void DeleteUserById(long id)
+        {
+            using (var conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("DELETE FROM users WHERE id = @id", conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", id);
                     cmd.ExecuteNonQuery();
                 }
             }
