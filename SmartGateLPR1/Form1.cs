@@ -16,6 +16,7 @@ using System.Text;        // สำหรับแปลง bytes เป็น s
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Label = System.Windows.Forms.Label;
 
 namespace SmartGateLPR1
 {
@@ -62,13 +63,52 @@ namespace SmartGateLPR1
         private System.Windows.Forms.Timer menuTimer;
         private bool menuOpening = false;
         private const int MenuWidth = 220;
+
+        // ===== ศูนย์ตัดสินใจไฮบริด RFID + LPR =====
+        private string pendingRfidTag = "";
+        private DateTime pendingRfidTime = DateTime.MinValue;
+        private string[] pendingPlateCam = new string[] { "", "", "" };   // ป้ายล่าสุดต่อกล้อง [1]=หน้า [2]=หลัง
+        private string[] pendingProvCam = new string[] { "", "", "" };
+        private DateTime[] pendingPlateCamTime = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+        private readonly object hybridLock = new object();
+        private bool gateBusy = false;                 // กันตัดสินซ้ำระหว่างไม้เปิดค้าง
+        private System.Windows.Forms.Timer timerHybridTimeout;
+
+        private int hybridWindowSec = 15;              // สองฝั่งต้องมาห่างกันไม่เกินกี่วินาที
+        private int noPlateGraceSec = 10;    // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน
+        private bool strictProvince = false;           // true = จังหวัดต้องตรงด้วยถึงเปิด
+        private bool requireRfid = true;
+        private bool allowNoPlate = true;
+        private bool requirePlatesAgree = false;
+        private bool allowPlateTagMismatch = false;
+        private DateTime plateSeenNoTagAt = DateTime.MinValue;  // เวลาที่เริ่มเห็นป้ายทั้งที่ยังไม่มีแท็ก (โหมด RFID)
+        private int plateOnlyDenySec = 3;                       // เจอป้ายแต่ไม่มีแท็กกี่วิ → ปฏิเสธ
+        private bool[] plateSeen = new bool[3];   // index 1,2 = กล้องหน้า/หลังเจอป้ายไหม
+
+        // ตัดช่องว่างก่อนเทียบ (ฐานข้อมูลเก็บ "กท 2058" แต่ LPR อ่านได้ "กท2058")
+        private static string NormPlate(string s) =>
+            (s ?? "").Replace(" ", "").Replace("-", "").Trim();
+
+        private Label PlateLabel(int camId) => camId == 1 ? lblLicensePlate1 : lblLicensePlate2;
+        private Label StatusLabel(int camId) => camId == 1 ? lblLprStatus1 : lblLprStatus2;
+        private int retryMaxSec = 15;    // มีบัตรแล้ว วนอ่านป้ายซ้ำได้นานสุดกี่วิ ก่อนยอมแพ้
+        private bool sawMismatch = false;
+        
+        
+
         public btnDisconnectRFID()
         {
             InitializeComponent();
             try { db = new DatabaseHelper(); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
-            InitSideMenu();              
+            InitSideMenu();
             LoadSavedSettings();
+            LoadAccessPolicy();
+            ShowCameraPlaceholder(pbCamera1);
+            ShowCameraPlaceholder(pbCamera2);
+            timerHybridTimeout = new System.Windows.Forms.Timer { Interval = 1000 };
+            timerHybridTimeout.Tick += TimerHybridTimeout_Tick;
+            timerHybridTimeout.Start();
         }
 
 
@@ -107,19 +147,19 @@ namespace SmartGateLPR1
             panelMenu.Controls.Add(MakeMenuButton("📷  ตั้งค่ากล้อง", 100, (s, e) =>
             {
                 ToggleMenu();
-                using (var f = new CameraSettingsForm())
+                using (var f = new CameraSettingsForm(this))
                     if (f.ShowDialog(this) == DialogResult.OK) LoadSavedSettings();
             }));
             panelMenu.Controls.Add(MakeMenuButton("📡  ตั้งค่า RFID", 150, (s, e) =>
             {
                 ToggleMenu();
-                using (var f = new RfidSettingsForm())
+                using (var f = new RfidSettingsForm(this))
                     if (f.ShowDialog(this) == DialogResult.OK) LoadSavedSettings();
             }));
-            panelMenu.Controls.Add(MakeMenuButton("🚧  ตั้งค่าไม้กั้น", 200, (s, e) =>
+            panelMenu.Controls.Add(MakeMenuButton("🚧  ตั้งค่าเงื่อนไขการอนุญาต", 200, (s, e) =>
             {
                 ToggleMenu();
-                MessageBox.Show("หน้าตั้งค่าไม้กั้น — เดี๋ยวทำตามแบบ CameraSettingsForm");
+                using (var f = new AccessPolicyForm(this)) f.ShowDialog(this);
             }));
             panelMenu.Controls.Add(MakeMenuButton("🗂  บันทึกป้ายทะเบียน", 250, (s, e) =>
             {
@@ -254,34 +294,57 @@ namespace SmartGateLPR1
             }
         }
 
-        // --- 2. ปุ่มเปิดกล้อง (สั่งเปิดทั้ง 2 ตัวพร้อมกัน) ---
         private void btnStartCamera_Click(object sender, EventArgs e)
         {
-            // -- เริ่มกล้องตัวที่ 1 --
-            if (!isCam1Running)
-            {
-                string url1 = txtRTSP.Text; // ดึง Link กล้อง 1
-                if (string.IsNullOrEmpty(url1)) url1 = "rtsp://admin:pass@192.168.1.64:554/stream1"; // แก้ IP ตรงนี้
+            StartCamera(1);
+            StartCamera(2);
+        }
 
+        public void StartCamera(int camId)
+        {
+            var cfg = SettingsStore.Load();
+
+            if (camId == 1 && !isCam1Running)
+            {
+                string url = !string.IsNullOrWhiteSpace(cfg.RtspCamera1) ? cfg.RtspCamera1 : txtRTSP.Text.Trim();
+                if (string.IsNullOrWhiteSpace(url))
+                {
+                    ShowCameraPlaceholder(pbCamera1, "ยังไม่ได้ตั้งค่ากล้อง 1 (☰ → ตั้งค่ากล้อง)");
+                    return;
+                }
                 isCam1Running = true;
-                // ส่ง pbCamera1 และ ตัวแปรเช็คสถานะ เข้าไปในฟังก์ชัน
-                threadCam1 = new Thread(() => CaptureCamera(url1, pbCamera1, 1));
-                threadCam1.IsBackground = true;
+                threadCam1 = new Thread(() => CaptureCamera(url, pbCamera1, 1)) { IsBackground = true };
                 threadCam1.Start();
             }
-
-            // -- เริ่มกล้องตัวที่ 2 --
-            if (!isCam2Running)
+            else if (camId == 2 && !isCam2Running)
             {
-                string url2 = txtRTSP2.Text; // ดึง Link กล้อง 2
-                if (string.IsNullOrEmpty(url2)) url2 = "rtsp://admin:pass@192.168.1.65:554/stream1"; // แก้ IP ตรงนี้
-
+                string url = !string.IsNullOrWhiteSpace(cfg.RtspCamera2) ? cfg.RtspCamera2 : txtRTSP2.Text.Trim();
+                if (string.IsNullOrWhiteSpace(url))
+                {
+                    ShowCameraPlaceholder(pbCamera2, "ยังไม่ได้ตั้งค่ากล้อง 2 (☰ → ตั้งค่ากล้อง)");
+                    return;
+                }
                 isCam2Running = true;
-                // ส่ง pbCamera2 และ เลข id 2 เข้าไป
-                threadCam2 = new Thread(() => CaptureCamera(url2, pbCamera2, 2));
-                threadCam2.IsBackground = true;
+                threadCam2 = new Thread(() => CaptureCamera(url, pbCamera2, 2)) { IsBackground = true };
                 threadCam2.Start();
             }
+        }
+
+        public void StopCamera(int camId)
+        {
+            if (camId == 1) isCam1Running = false;
+            else isCam2Running = false;
+
+            lock (hybridLock) plateSeen[camId] = false;
+            var pLbl = PlateLabel(camId);
+            var sLbl = StatusLabel(camId);
+            Action reset = () =>
+            {
+                sLbl.Text = "สถานะการตรวจจับป้ายทะเบียน"; sLbl.ForeColor = Color.Black;
+                pLbl.Text = "แสดงเลขทะเบียน"; pLbl.ForeColor = Color.Black;
+            };
+            if (this.InvokeRequired) this.BeginInvoke(reset); else reset();
+
         }
 
         // --- 3. ฟังก์ชันดึงภาพ (ใช้ร่วมกันได้ โดยดูจาก ID) ---
@@ -291,7 +354,7 @@ namespace SmartGateLPR1
 
             if (!capture.IsOpened())
             {
-                
+
                 ShowNoSignal(displayBox, "❌ ไม่มีการเชื่อมต่อกล้อง");
 
                 // ปิดสถานะตาม ID
@@ -381,6 +444,7 @@ namespace SmartGateLPR1
             }
 
             capture.Release();
+            ShowCameraPlaceholder(displayBox, "CAMERA NOT FOUND");   // ⬅️ เพิ่ม
         }
         // --- ปุ่มที่ 2: เพิ่มข้อมูลทดสอบลง Database ---
         private void btnTestAddData_Click(object sender, EventArgs e)
@@ -452,94 +516,68 @@ namespace SmartGateLPR1
         {
 
         }
-
         private void btnConnectRFID_Click(object sender, EventArgs e)
         {
-            // --- กรณีที่ 1: ถ้าเชื่อมต่ออยู่แล้ว (ต้องการตัดสาย) ---
-            if (isRfidRunning)
+            if (isRfidRunning) DisconnectRfid();
+            else ConnectRfid();
+        }
+
+        // เชื่อมต่อ RFID (เรียกได้จากทั้งหน้าหลักและเมนู) — ใช้ค่าจาก settings.json
+        public void ConnectRfid()
+        {
+            if (isRfidRunning) return;   // ต่ออยู่แล้ว ไม่ต้องต่อซ้ำ
+
+            var cfg = SettingsStore.Load();
+            string ip = !string.IsNullOrWhiteSpace(cfg.RfidIp) ? cfg.RfidIp : txtRfidIP.Text.Trim();
+            int port = cfg.RfidPort > 0 ? cfg.RfidPort : 23;
+            string user = string.IsNullOrEmpty(cfg.RfidUser) ? "alien" : cfg.RfidUser;
+            string pass = string.IsNullOrEmpty(cfg.RfidPassword) ? "password" : cfg.RfidPassword;
+
+            if (string.IsNullOrWhiteSpace(ip))
             {
-                // 1. สั่งหยุด Loop
-                isRfidRunning = false;
-
-                // 2. สั่งตัดสาย Telnet
-                if (rfidTelnet != null) rfidTelnet.Disconnect();
-
-                // 3. เปลี่ยนหน้าจอกลับเป็นสถานะเดิม
-                btnConnectRFID.Text = "เชื่อมต่อ RFID"; // เปลี่ยนชื่อปุ่มกลับ
-                btnConnectRFID.BackColor = Color.LightGray; // (ออปชั่นเสริม) คืนสีปุ่มเดิม
-                lblRfidStatus1.Text = "สถานะ: ตัดการเชื่อมต่อแล้ว";
-                lblRfidStatus1.ForeColor = Color.Red;
+                MessageBox.Show("ยังไม่ได้ตั้งค่า IP ของเครื่อง RFID (☰ → ตั้งค่า RFID)");
+                return;
             }
-            // --- กรณีที่ 2: ถ้ายังไม่เชื่อมต่อ (ต้องการเริ่มเชื่อมต่อ) ---
-            else
+
+            SetRfidUi("กำลังเชื่อมต่อ...", Color.Orange, false);
+
+            Thread loginThread = new Thread(() =>
             {
-                var cfg = SettingsStore.Load();
-                string ip = !string.IsNullOrWhiteSpace(cfg.RfidIp) ? cfg.RfidIp : txtRfidIP.Text.Trim();
-                int port = cfg.RfidPort > 0 ? cfg.RfidPort : 23;
-                string rfidUser = string.IsNullOrEmpty(cfg.RfidUser) ? "alien" : cfg.RfidUser;
-                string rfidPass = string.IsNullOrEmpty(cfg.RfidPassword) ? "password" : cfg.RfidPassword;
-
-                lblRfidStatus1.Text = "กำลังเชื่อมต่อ...";
-                lblRfidStatus1.ForeColor = Color.Orange;
-                btnConnectRFID.Enabled = false; // ล็อกปุ่มชั่วคราวกันกดรัวๆ
-
-                // เริ่ม Thread เชื่อมต่อ
-                Thread loginThread = new Thread(() =>
+                rfidTelnet = new SimpleTelnet();
+                if (rfidTelnet.Connect(ip, port) && rfidTelnet.Login(user, pass))
                 {
-                    rfidTelnet = new SimpleTelnet();
+                    rfidTelnet.Send("set TimeOut = 0");
+                    Thread.Sleep(500);
+                    isRfidRunning = true;
+                    rfidThread = new Thread(ReadRfidLoop) { IsBackground = true };
+                    rfidThread.Start();
+                    this.Invoke(new Action(() => SetRfidUi("สถานะ: เชื่อมต่อสำเร็จ", Color.Green, true)));
+                }
+                else
+                {
+                    try { rfidTelnet.Disconnect(); } catch { }
+                    this.Invoke(new Action(() => SetRfidUi("เชื่อมต่อไม่สำเร็จ — เช็ค IP/user/pass", Color.Red, false)));
+                }
+            })
+            { IsBackground = true };
+            loginThread.Start();
+        }
 
-                    if (rfidTelnet.Connect(ip, port))
-                    {
-                        bool loginSuccess = rfidTelnet.Login(rfidUser, rfidPass);
+        public void DisconnectRfid()
+        {
+            isRfidRunning = false;
+            if (rfidTelnet != null) { try { rfidTelnet.Disconnect(); } catch { } }
+            SetRfidUi("สถานะ: ตัดการเชื่อมต่อแล้ว", Color.Red, false);
+        }
 
-                        if (loginSuccess)
-                        {
-                            // สั่งห้ามหลับ (Timeout = 0)
-                            rfidTelnet.Send("set TimeOut = 0");
-                            Thread.Sleep(500);
-
-                            this.Invoke(new Action(() =>
-                            {
-                                // อัปเดตเมื่อต่อติด
-                                lblRfidStatus1.Text = "สถานะ: เชื่อมต่อสำเร็จ";
-                                lblRfidStatus1.ForeColor = Color.Green;
-
-                                // *** เปลี่ยนหน้าตาปุ่มให้เป็นปุ่มตัดสาย ***
-                                btnConnectRFID.Text = "ตัดการเชื่อมต่อ";
-                                btnConnectRFID.Enabled = true; // ปลดล็อกปุ่ม
-                            }));
-
-                            // เริ่ม Loop อ่านข้อมูล
-                            isRfidRunning = true;
-                            rfidThread = new Thread(ReadRfidLoop);
-                            rfidThread.IsBackground = true;
-                            rfidThread.Start();
-                        }
-                        else
-                        {
-                            this.Invoke(new Action(() =>
-                            {
-                                MessageBox.Show("Login ไม่ผ่าน!");
-                                btnConnectRFID.Enabled = true; // ปลดล็อกปุ่มให้ลองใหม่
-                                lblRfidStatus1.Text = "Login ผิดพลาด";
-                            }));
-                            rfidTelnet.Disconnect();
-                        }
-                    }
-                    else
-                    {
-                        this.Invoke(new Action(() =>
-                        {
-                            MessageBox.Show("เชื่อมต่อ IP ไม่ได้");
-                            btnConnectRFID.Enabled = true; // ปลดล็อกปุ่มให้ลองใหม่
-                            lblRfidStatus1.Text = "ไม่พบเครื่อง RFID";
-                        }));
-                    }
-                });
-
-                loginThread.IsBackground = true;
-                loginThread.Start();
-            }
+        // อัปเดตหน้าตาปุ่ม/สถานะ RFID ให้ตรงกัน (connected = true เมื่อต่อติด)
+        private void SetRfidUi(string status, Color color, bool connected)
+        {
+            if (this.InvokeRequired) { this.BeginInvoke(new Action(() => SetRfidUi(status, color, connected))); return; }
+            lblRfidStatus1.Text = status;
+            lblRfidStatus1.ForeColor = color;
+            btnConnectRFID.Text = connected ? "ตัดการเชื่อมต่อ" : "เชื่อมต่อ RFID";
+            btnConnectRFID.Enabled = true;
         }
         private void ReadRfidLoop()
         {
@@ -573,7 +611,7 @@ namespace SmartGateLPR1
 
                                     this.Invoke(new Action(() =>
                                     {
-                                        txtRFIDInput2.Text = tagId;
+                                        OnRfidScanned(tagId);
                                         // เรียกฟังก์ชันถ่ายรูป/OCR ต่อตรงนี้
                                     }));
                                 }
@@ -629,64 +667,317 @@ namespace SmartGateLPR1
             // เช็คว่าปุ่มที่กด คือปุ่ม Enter หรือไม่?
             if (e.KeyCode == Keys.Enter)
             {
-                string id = txtSimulateRFID.Text.Trim(); // รับค่าเลขบัตร
-
-                // สั่งค้นหาใน Database
-                DataTable dt = db.GetUserByTag(id);
-
-                if (dt.Rows.Count > 0) // ถ้าเจอข้อมูล (มากกว่า 0 แถว)
+                if (e.KeyCode == Keys.Enter)
                 {
-                    // ดึงข้อมูลแถวแรกมาโชว์
-                    string plate = dt.Rows[0]["plate_number"].ToString();
-                    string name = dt.Rows[0]["owner_name"].ToString();
-
-                    // 1. โชว์ข้อมูล
-                    lblShowPlate.Text = plate;
-                    lblShowName.Text = name;
-                    lblStatus.Text = "อนุญาตให้ผ่าน (Access Granted)";
-                    lblStatus.ForeColor = Color.Green;
-
-                    timerGate.Interval = 3000; // ตั้งเวลา 3000 ms = 3 วินาที
-                    timerGate.Start();         // เริ่มนับถอยหลัง!
-
-                    // 2. เปลี่ยนสีไม้กั้นเป็นเขียว (เปิด)
-                    picGate.BackColor = Color.LimeGreen;
+                    OnRfidScanned(txtSimulateRFID.Text.Trim());
+                    txtSimulateRFID.Clear();
+                    e.SuppressKeyPress = true;
                 }
-                else // ถ้าไม่เจอข้อมูล
-                {
-                    // แจ้งเตือน
-                    lblShowPlate.Text = "-";
-                    lblShowName.Text = "-";
-                    lblStatus.Text = "ไม่พบข้อมูล (Access Denied)";
-                    lblStatus.ForeColor = Color.Red;
-
-                    // เปลี่ยนสีไม้กั้นเป็นแดง (ปิด)
-                    picGate.BackColor = Color.Red;
-                }
-
-                // เคลียร์ช่องให้พร้อมสแกนคนต่อไป
-                txtSimulateRFID.Clear();
-
-                // กันเสียง ติ๊ง! เวลาด Enter
-                e.SuppressKeyPress = true;
             }
         }
 
         private void timerGate_Tick(object sender, EventArgs e)
         {
-            // 1. หยุดจับเวลา (เดี๋ยวทำงานซ้ำ)
             timerGate.Stop();
+            gateBusy = false;                              // พร้อมรับคันถัดไป
+            lock (hybridLock) { sawMismatch = false; plateSeenNoTagAt = DateTime.MinValue; }
 
-            // 2. เปลี่ยนสีกลับเป็นสีแดง (ปิดไม้กั้น)
-            picGate.BackColor = Color.Red;
+            // รีเซ็ตโซนอนุญาต: ไฟแดง + ข้อความรอ (SetAccessUi จัดการ picGate/lblShowPlate/lblShowName/lblStatus ให้หมดแล้ว)
+            SetAccessUi("⚪ รอตรวจสอบ...", Color.Gray, Color.Red, "-", "-", "พร้อมใช้งาน");
 
-            // 3. รีเซ็ตสถานะเป็น "พร้อมใช้งาน"
-            lblStatus.Text = "พร้อมใช้งาน (Ready)";
-            lblStatus.ForeColor = Color.Blue; // หรือสีดำตามชอบ
+            // รีเซ็ตสถานะ RFID กลับเป็น "รอตรวจจับ"
+            lblRfidStatus.Text = "⏳ กำลังรอตรวจจับแท็ก RFID...";
+            lblRfidStatus.ForeColor = Color.Gray;
 
-            // 4. (ออพชั่นเสริม) เคลียร์ชื่อกับทะเบียนออกด้วยก็ได้
-            lblShowPlate.Text = "-";
-            lblShowName.Text = "-";
+            // รีเซ็ตฝั่ง LPR
+            lock (hybridLock) { plateSeen[1] = false; plateSeen[2] = false; }
+            UpdateLprZone(1);
+            UpdateLprZone(2);
+        }
+
+        // จุดรับข้อมูลจาก RFID (ทั้งตัวจริงและจำลอง)
+        public void OnRfidScanned(string tagId)
+        {
+            if (string.IsNullOrWhiteSpace(tagId)) return;
+            lock (hybridLock)
+            {
+                pendingRfidTag = tagId.Trim();
+                pendingRfidTime = DateTime.Now;
+                plateSeenNoTagAt = DateTime.MinValue;   // ⬅️ เพิ่ม: แท็กมาแล้ว ยกเลิกนับถอยหลังปฏิเสธ
+            }
+            this.BeginInvoke(new Action(() =>
+            {
+                txtRFIDInput2.Text = tagId;
+                lblRfidStatus.Text = "✅ ตรวจพบแท็ก RFID แล้ว";
+                lblRfidStatus.ForeColor = Color.Green;
+                lblResult.Text = "⏳ กำลังรอข้อมูลจาก LPR...";
+                lblResult.ForeColor = Color.DarkOrange;
+            }));
+            TryDecide();
+        }
+
+        // จุดรับข้อมูลจาก LPR (เรียกตอนอ่านป้ายสำเร็จ)
+        public void OnPlateRead(string plate, string province, int camId)
+        {
+            if (string.IsNullOrWhiteSpace(plate)) return;
+            lock (hybridLock)
+            {
+                pendingPlateCam[camId] = plate.Trim();
+                pendingProvCam[camId] = (province ?? "").Trim();
+                pendingPlateCamTime[camId] = DateTime.Now;
+                if (requireRfid && pendingRfidTag == "" && plateSeenNoTagAt == DateTime.MinValue)   // ⬅️ เพิ่ม
+                    plateSeenNoTagAt = DateTime.Now;                                                 // ⬅️ เพิ่ม
+            }
+            this.BeginInvoke(new Action(() =>
+            {
+                if (string.IsNullOrEmpty(pendingRfidTag))
+                {
+                    lblRfidStatus.Text = "⏳ กำลังรอตรวจจับแท็ก RFID...";
+                    lblRfidStatus.ForeColor = Color.Gray;
+                    lblResult.Text = "⏳ รอข้อมูลจาก RFID...";
+                    lblResult.ForeColor = Color.DarkOrange;
+                }
+            }));
+            TryDecide();
+        }
+
+        private void LoadAccessPolicy()
+        {
+            var st = SettingsStore.Load();
+            requireRfid = st.RequireRfid;
+            allowNoPlate = st.AllowNoPlate;
+            requirePlatesAgree = st.RequirePlatesAgree;
+            allowPlateTagMismatch = st.AllowPlateTagMismatch;
+        }
+        public void ReloadAccessPolicy() => LoadAccessPolicy();
+
+        // ตัดสินเมื่อข้อมูลครบสองฝั่งภายในหน้าต่างเวลา
+        private void TryDecide()
+        {
+            string tag, p1, p2;
+            lock (hybridLock)
+            {
+                if (gateBusy) return;
+                bool rfidFresh = pendingRfidTag != "" &&
+                                 (DateTime.Now - pendingRfidTime).TotalSeconds <= hybridWindowSec;
+
+                p1 = (pendingPlateCam[1] != "" && (DateTime.Now - pendingPlateCamTime[1]).TotalSeconds <= hybridWindowSec) ? pendingPlateCam[1] : "";
+                p2 = (pendingPlateCam[2] != "" && (DateTime.Now - pendingPlateCamTime[2]).TotalSeconds <= hybridWindowSec) ? pendingPlateCam[2] : "";
+                bool havePlate = p1 != "" || p2 != "";
+
+                if (requireRfid && !rfidFresh) return;   // โหมดบังคับบัตร: ไม่มีบัตรไม่ตัดสิน
+                if (!rfidFresh && !havePlate) return;     // ไม่มีทั้งบัตรและป้าย รอต่อ
+
+                tag = rfidFresh ? pendingRfidTag : "";
+            }
+
+            if (tag != "") { DecideWithRfid(tag, p1, p2); return; }   // มีบัตร → ไฮบริด
+            DecideLprOnly(p1, p2);                                    // ไม่มีบัตร (requireRfid=false) → LPR อย่างเดียว
+        }
+
+        // ---- โหมดมีบัตร (ไฮบริด) ----
+        private void DecideWithRfid(string tag, string p1, string p2)
+        {
+            DataTable dt = db.GetUserByTag(tag);
+            if (dt.Rows.Count == 0)
+            {
+                lock (hybridLock) { gateBusy = true; pendingRfidTag = ""; }
+                DenyAccess($"ไม่พบบัตร {tag} ในระบบ");
+                return;
+            }
+
+            var row = dt.Rows[0];
+            string dbPlate = row["plate_number"]?.ToString() ?? "";
+            string dbPerm = row.Table.Columns.Contains("permission") ? row["permission"]?.ToString() ?? "" : "";
+            string owner = row["owner_name"]?.ToString() ?? "";
+            string dbProv = row.Table.Columns.Contains("province") ? row["province"]?.ToString() ?? "" : "";
+            string dbPlateShow = dbProv != "" ? dbPlate + " " + dbProv : dbPlate;   // ทะเบียน + จังหวัด สำหรับแสดงผล
+
+            bool havePlate = p1 != "" || p2 != "";
+            bool bothRead = p1 != "" && p2 != "";
+            bool platesDisagree = bothRead && NormPlate(p1) != NormPlate(p2);   // อ่านได้ทั้งคู่แต่เลขคนละอัน
+            bool m1 = p1 != "" && NormPlate(p1) == NormPlate(dbPlate);
+            bool m2 = p2 != "" && NormPlate(p2) == NormPlate(dbPlate);
+
+            // สวิตช์ "ต้องตรงทั้ง 2 กล้อง" = บล็อกเฉพาะตอนอ่านได้ทั้งคู่แต่ขัดกัน
+            // (รถติดป้ายด้านเดียว อีกกล้องอ่านไม่เจอ → ไม่ถือว่าขัด ยังผ่านได้)
+            bool blockedByDisagree = requirePlatesAgree && platesDisagree;
+            bool plateOk = blockedByDisagree ? false : (m1 || m2);
+
+            if (plateOk)
+            {
+                lock (hybridLock)
+                {
+                    gateBusy = true; sawMismatch = false;
+                    pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                }
+                string which = (m1 && m2) ? "กล้องหน้า+หลัง" : (m1 ? "กล้องหน้า" : "กล้องหลัง");
+                GrantAccess(owner, dbPlateShow, dbPerm, $"ยืนยันผ่าน {which} ตรงกับบัตร");
+                return;
+            }
+
+            // สวิตช์: อ่านป้ายได้แต่ไม่ตรง + อนุญาตให้ผ่านด้วยบัตร (แต่ถ้าหน้า-หลังขัดกันและเปิด requirePlatesAgree ห้ามใช้ทางลัดนี้)
+            if (havePlate && allowPlateTagMismatch && !blockedByDisagree)
+            {
+                lock (hybridLock)
+                {
+                    gateBusy = true; sawMismatch = false;
+                    pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                }
+                GrantAccess(owner, dbPlateShow, dbPerm, "อนุญาตด้วย RFID (ป้ายไม่ตรง อนุญาตตามนโยบาย)");
+                return;
+            }
+
+            if (!havePlate) return;   // ยังไม่มีป้าย → รอ (timer จัดการเคสไม่มีป้าย) อย่าตั้ง sawMismatch
+
+            // มีป้ายแต่ไม่ผ่านเงื่อนไข → วนอ่านซ้ำจนครบเวลา แล้วปฏิเสธ
+            bool keepTrying;
+            lock (hybridLock)
+            {
+                keepTrying = (DateTime.Now - pendingRfidTime).TotalSeconds < retryMaxSec;
+                if (keepTrying) { pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; sawMismatch = true; }
+                else { gateBusy = true; pendingRfidTag = ""; sawMismatch = false; }
+            }
+            string detail = blockedByDisagree
+                ? $"ป้ายหน้า-หลังไม่ตรงกัน ({p1} / {p2}) — กำลังอ่านซ้ำ..."
+                : $"ป้ายที่อ่านได้ยังไม่ตรงบัตร ({dbPlate}) — กำลังอ่านซ้ำ...";
+            if (keepTrying)
+                SetAccessUi("🔄 กำลังตรวจสอบใหม่...", Color.DarkOrange, Color.Red, dbPlate, "-", detail);
+            else
+                DenyAccess(blockedByDisagree
+                    ? "⛔ ป้ายหน้า-หลังไม่ตรงกัน (ตรวจสอบซ้ำแล้ว)"
+                    : "⛔ ป้ายทะเบียนไม่ตรงกับบัตร (ตรวจสอบซ้ำแล้ว)");
+        }
+
+        // ---- โหมด LPR อย่างเดียว (ไม่มีบัตร): ป้ายตรงฐานข้อมูล = ผ่าน ----
+        private void DecideLprOnly(string p1, string p2)
+        {
+            // สวิตช์ 4: อ่านได้ทั้ง 2 กล้องแต่เลขคนละอัน → ปฏิเสธ (กันปลอมป้าย) ในโหมด LPR ล้วนด้วย
+            bool bothRead = p1 != "" && p2 != "";
+            if (requirePlatesAgree && bothRead && NormPlate(p1) != NormPlate(p2))
+            {
+                lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; }
+                DenyAccess($"⛔ ป้ายหน้า-หลังไม่ตรงกัน ({p1} / {p2})");
+                return;
+            }
+
+            foreach (var item in new[] { (plate: p1, cam: "หน้า"), (plate: p2, cam: "หลัง") })
+            {
+                if (string.IsNullOrEmpty(item.plate)) continue;
+                DataTable dt = db.GetUserByPlate(NormPlate(item.plate));
+                if (dt.Rows.Count > 0)
+                {
+                    var row = dt.Rows[0];
+                    string owner = row["owner_name"]?.ToString() ?? "";
+                    string perm = row.Table.Columns.Contains("permission") ? row["permission"]?.ToString() ?? "" : "";
+                    string dbPlate = row["plate_number"]?.ToString() ?? "";
+                    string dbProv = row.Table.Columns.Contains("province") ? row["province"]?.ToString() ?? "" : "";
+                    if (dbProv != "") dbPlate = dbPlate + " " + dbProv;
+                    lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; }
+                    GrantAccess(owner, dbPlate, perm, $"✔ ผ่านด้วยป้ายทะเบียน (กล้อง{item.cam}) — โหมดไม่ใช้ RFID");
+                    return;
+                }
+            }
+            // ไม่มีป้ายที่ลงทะเบียนในระบบ → ปฏิเสธ (มีป้ายให้เทียบแล้ว แต่ไม่พบข้อมูล)
+            lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; }
+            DenyAccess("⛔ ปฏิเสธ — ไม่พบข้อมูลในระบบ");
+        }
+
+        private void GrantAccess(string owner, string plate, string permission,
+                                 string detail = "ยืนยัน 2 ชั้นผ่าน (RFID + ป้ายทะเบียน)")
+        {
+            lock (hybridLock) sawMismatch = false;      // ⬅️ เพิ่ม
+            string who = owner + (permission != "" ? $" ({permission})" : "");
+            SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen,
+                        plate, who, detail);
+            this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
+        }
+
+        private void DenyAccess(string reason)
+        {
+            SetAccessUi("⛔ ไม่อนุญาตให้เข้า", Color.Red, Color.Red, "-", "-", reason);
+            this.BeginInvoke(new Action(() => { timerGate.Interval = 4000; timerGate.Start(); }));
+        }
+
+        private void GrantAccessNoPlate(string tag)
+        {
+            DataTable dt = db.GetUserByTag(tag);
+            if (dt.Rows.Count == 0)
+            {
+                DenyAccess($"ไม่พบบัตร {tag} ในระบบ");
+                return;
+            }
+
+            var row = dt.Rows[0];
+            string owner = row["owner_name"]?.ToString() ?? "";
+            string perm = row.Table.Columns.Contains("permission") ? row["permission"]?.ToString() ?? "" : "";
+            string dbPlate = row["plate_number"]?.ToString() ?? "";
+            string dbProv = row.Table.Columns.Contains("province") ? row["province"]?.ToString() ?? "" : "";
+            if (dbProv != "") dbPlate = dbPlate + " " + dbProv;
+            string who = owner + (perm != "" ? $" ({perm})" : "");
+
+            SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen,
+                        dbPlate, who, "⚠️ ตรวจพบแท็ก RFID แต่ตรวจจับไม่พบป้ายทะเบียน");
+            this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
+        }
+
+        private void TimerHybridTimeout_Tick(object sender, EventArgs e)
+        {
+            string tagOnlyGrant = null;
+            string tagMismatchDeny = null;
+            bool plateNoTagDeny = false;
+
+            lock (hybridLock)
+            {
+                if (gateBusy) return;
+
+                bool haveRfid = pendingRfidTag != "";
+                bool havePlate = pendingPlateCam[1] != "" || pendingPlateCam[2] != "";
+
+                // เคสA: มีบัตร ไม่มีป้าย ไม่เคยเจอป้ายผิด + ครบ 10 วิ → อนุญาต (รถไม่ติดป้าย)
+                if (haveRfid && !havePlate && !sawMismatch &&
+                    (DateTime.Now - pendingRfidTime).TotalSeconds >= noPlateGraceSec)
+                {
+                    tagOnlyGrant = pendingRfidTag;
+                    gateBusy = true;
+                    pendingRfidTag = "";
+                }
+                // เคสB: มีบัตร เคยเจอป้ายผิด วนอ่านซ้ำครบ 20 วิ → ปฏิเสธจริง
+                else if (haveRfid && sawMismatch &&
+                         (DateTime.Now - pendingRfidTime).TotalSeconds >= retryMaxSec)
+                {
+                    tagMismatchDeny = pendingRfidTag;
+                    gateBusy = true;
+                    pendingRfidTag = "";
+                    sawMismatch = false;
+                }
+                // เคสC: มีป้าย ไม่มีบัตร
+                else if (havePlate && !haveRfid)
+                {
+                    // โหมด RFID: เจอป้ายแต่ไม่มีแท็กครบ plateOnlyDenySec วิ → ปฏิเสธ (ให้ระบบตอบสนอง)
+                    if (requireRfid && plateSeenNoTagAt != DateTime.MinValue &&
+                        (DateTime.Now - plateSeenNoTagAt).TotalSeconds >= plateOnlyDenySec)
+                    {
+                        plateNoTagDeny = true;
+                        gateBusy = true;
+                        pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                        plateSeenNoTagAt = DateTime.MinValue;
+                    }
+                    else
+                    {
+                        // ล้างป้ายที่หมดอายุ + ถ้าป้ายหายหมดให้รีเซ็ตตัวนับ (กันค้างไปคันถัดไป)
+                        if ((DateTime.Now - pendingPlateCamTime[1]).TotalSeconds > hybridWindowSec) pendingPlateCam[1] = "";
+                        if ((DateTime.Now - pendingPlateCamTime[2]).TotalSeconds > hybridWindowSec) pendingPlateCam[2] = "";
+                        if (pendingPlateCam[1] == "" && pendingPlateCam[2] == "") plateSeenNoTagAt = DateTime.MinValue;
+                    }
+                }
+            }
+
+            if (tagOnlyGrant != null) GrantAccessNoPlate(tagOnlyGrant);
+            else if (tagMismatchDeny != null)
+                DenyAccess("⛔ ป้ายทะเบียนไม่ตรงกับบัตร (ตรวจสอบซ้ำแล้ว)");
+            else if (plateNoTagDeny)                                              
+                DenyAccess("⛔ ตรวจพบป้ายทะเบียน แต่ไม่พบแท็ก RFID");           
         }
 
         private void label3_Click_1(object sender, EventArgs e)
@@ -724,6 +1015,7 @@ namespace SmartGateLPR1
                     {
                         bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                         var content = new MultipartFormDataContent();
+                        SetLprStatus(camId, "⏳ กำลังประมวลผล...", Color.Blue);
                         content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
 
                         // ยิงไปที่ Python API
@@ -739,8 +1031,10 @@ namespace SmartGateLPR1
 
                             this.Invoke((MethodInvoker)delegate
                             {
-                                lblLicensePlate.Text = fullText;
-                                lblLicensePlate.ForeColor = Color.Green;
+                                SetPlateText(camId, fullText);
+                                SetLprStatus(camId, $"✅ อ่านสำเร็จ (กล้อง{(camId == 1 ? "หน้า" : "หลัง")})", Color.Green);
+                                string provinceRead = result.province != null ? (string)result.province : "";
+                                OnPlateRead((string)result.text, provinceRead, camId);
                             });
 
                             lock (boxLock)
@@ -853,6 +1147,8 @@ namespace SmartGateLPR1
                                 latestPlateBox[camId] = new Rectangle(x1, y1, x2 - x1, y2 - y1);
                                 hasPlateBox[camId] = true;
                                 latestBoxTime[camId] = DateTime.Now;
+                                lock (hybridLock) plateSeen[camId] = true;
+                                UpdateLprZone(camId);
                                 // 🎯 เจอป้ายในเฟรม = จังหวะดีที่สุดที่จะอ่าน → สั่งอ่านเลย (แทน motion trigger)
                                 if (!isAIProcessing &&
                                     (DateTime.Now - lastCaptureTimes[camId]).TotalSeconds >= cooldownSeconds)
@@ -862,13 +1158,27 @@ namespace SmartGateLPR1
                                     Task.Run(() => SendToAI(readFrame, camId));
                                 }
                             }
-                            else { hasPlateBox[camId] = false; }
+                            else 
+                            { 
+                                hasPlateBox[camId] = false;
+                                lock (hybridLock) plateSeen[camId] = false;    // ⬅️ เพิ่ม
+                                UpdateLprZone(camId);
+                            }
+                            
                         }
                     }
                 }
             }
             catch { }
             finally { isDetecting[camId] = false; bitmap.Dispose(); }
+        }
+
+        private void UpdateLprZone(int camId)
+        {
+            bool seen;
+            lock (hybridLock) seen = plateSeen[camId];
+            if (seen) SetLprStatus(camId, "🟥 พบป้ายทะเบียน", Color.DarkOrange);
+            else SetLprStatus(camId, "รอตรวจจับ...", Color.Gray);
         }
 
         private void txtRTSP_TextChanged(object sender, EventArgs e)
@@ -892,5 +1202,73 @@ namespace SmartGateLPR1
                 box.Image = bmp;
             }));
         }
+
+        private void ShowCameraPlaceholder(PictureBox box, string msg = "CAMERA NOT FOUND")
+        {
+            if (box.InvokeRequired) { box.BeginInvoke(new Action(() => ShowCameraPlaceholder(box, msg))); return; }   // ⬅️ เพิ่ม
+            Bitmap bmp = new Bitmap(Math.Max(box.Width, 320), Math.Max(box.Height, 240));
+            using (Graphics g = Graphics.FromImage(bmp))
+            using (var font = new System.Drawing.Font("Segoe UI", 16, FontStyle.Bold))
+            {
+                g.Clear(Color.FromArgb(74, 74, 74));   // เทาเข้ม
+                SizeF sz = g.MeasureString(msg, font);
+                g.DrawString(msg, font, Brushes.LightGray, (bmp.Width - sz.Width) / 2, (bmp.Height - sz.Height) / 2);
+            }
+            if (box.Image != null) box.Image.Dispose();
+            box.Image = bmp;
+        }
+
+        private void SetLprStatus(int camId, string msg, Color c)
+        {
+            var lbl = StatusLabel(camId);
+            if (lbl.InvokeRequired) lbl.BeginInvoke(new Action(() => { lbl.Text = msg; lbl.ForeColor = c; }));
+            else { lbl.Text = msg; lbl.ForeColor = c; }
+        }
+
+        private void SetPlateText(int camId, string text)
+        {
+            var lbl = PlateLabel(camId);
+            Action apply = () => { lbl.Text = text; lbl.ForeColor = Color.Green; };
+            if (lbl.InvokeRequired) lbl.BeginInvoke(apply);
+            else apply();
+        }
+
+        private void SetAccessUi(string result, Color resultColor, Color gateColor,
+                                 string plate, string name, string detail)
+        {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action(() => SetAccessUi(result, resultColor, gateColor, plate, name, detail)));
+                return;
+            }
+            lblResult.Text = result;
+            lblResult.ForeColor = resultColor;
+            picGate.BackColor = gateColor;
+            lblShowPlate.Text = "ทะเบียน: " + plate;
+            lblShowName.Text = "ประเภทสิทธิ์: " + name;
+            lblStatus.Text = detail;
+            lblStatus.ForeColor = resultColor;
+        }
+        private void txtSimulateRFID_TextChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void txtRFIDInput2_TextChanged(object sender, EventArgs e)
+        {
+
+        }
+
+        private void pbCamera1_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void groupBox3_Enter(object sender, EventArgs e)
+        {
+
+        }
+
+
     }
 }

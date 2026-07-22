@@ -25,6 +25,11 @@ namespace SmartGateLPR1
         public string CloudType { get; set; } = "MySQL";      // MySQL / PostgreSQL / Nextcloud / S3
         public string CloudRemotePath { get; set; } = "";     // โฟลเดอร์/Bucket ปลายทาง
         public bool CloudUseSsl { get; set; } = true;
+        // --- เงื่อนไขการอนุญาตเข้า-ออก ---
+        public bool RequireRfid { get; set; } = true;
+        public bool AllowNoPlate { get; set; } = true;
+        public bool RequirePlatesAgree { get; set; } = false;
+        public bool AllowPlateTagMismatch { get; set; } = false;
     }
 
     public static class SettingsStore

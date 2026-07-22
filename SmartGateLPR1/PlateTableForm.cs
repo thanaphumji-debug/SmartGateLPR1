@@ -193,7 +193,14 @@ namespace SmartGateLPR1
             if (e.RowIndex < 0) return;
             if (dgv.Columns[e.ColumnIndex].Name == "colOwner")
             {
-                MessageBox.Show("🚧 หน้าข้อมูลเจ้าของรถ — รอพัฒนา", "ข้อมูลเจ้าของรถ");
+                var idCell = dgv.Rows[e.RowIndex].Cells["colId"].Value;
+                if (idCell == null || Convert.ToInt64(idCell) <= 0)
+                {
+                    MessageBox.Show("กรุณากด 'บันทึกทั้งหมด' ก่อน แล้วค่อยกรอกข้อมูลเจ้าของรถ",
+                                    "ข้อมูลเจ้าของรถ", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                using (var f = new OwnerInfoForm(Convert.ToInt64(idCell))) f.ShowDialog(this);
             }
         }
     }

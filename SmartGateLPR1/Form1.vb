@@ -66,7 +66,7 @@ Namespace SmartGateLPR1
                     Bitmap image = BitmapConverter.ToBitmap(frame);
 
                     // ส่งรูปไปแสดงที่ PictureBox (ต้องใช้ Invoke เพราะอยู่คนละ Thread)
-                    If (pbCamera1.Image!= null) pbCamera1.Image.Dispose(); // เคลียร์รูปเก่าเพื่อคืน Ram
+                    If (pbCamera1.Image! = null) pbCamera1.Image.Dispose(); // เคลียร์รูปเก่าเพื่อคืน Ram
                     
                     pbCamera1.Invoke(New Action(() => 
                     {
@@ -86,7 +86,7 @@ Namespace SmartGateLPR1
         Private void Form1_FormClosing(Object sender, FormClosingEventArgs e)
         {
             isCameraRunning = false; // สั่งหยุดลูป
-            If (cameraThread!= null && cameraThread.IsAlive)
+            If (cameraThread! = null && cameraThread.IsAlive)
             {
                 cameraThread.Join(500); // รอให้ Thread จบ
             }

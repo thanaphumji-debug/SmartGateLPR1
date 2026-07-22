@@ -15,8 +15,10 @@ namespace SmartGateLPR1
         private Label lblStatus = new Label();
         private Button btnTest;
 
-        public RfidSettingsForm()
+        private btnDisconnectRFID main;
+        public RfidSettingsForm(btnDisconnectRFID mainForm)
         {
+            main = mainForm;
             Text = "ตั้งค่าเครื่องอ่าน RFID";
             ClientSize = new System.Drawing.Size(430, 260);
             StartPosition = FormStartPosition.CenterParent;
@@ -38,6 +40,12 @@ namespace SmartGateLPR1
 
             btnTest = new Button { Text = "ทดสอบเชื่อมต่อ", Left = 120, Top = 160, Width = 120 };
             btnTest.Click += BtnTest_Click;
+            var btnConnect = new Button { Text = "เชื่อมต่อ", Left = 245, Top = 160, Width = 80 };
+            var btnDisconnect = new Button { Text = "ตัดการเชื่อมต่อ", Left = 330, Top = 160, Width = 90 };
+            btnConnect.Click += (s, e) => { SaveOnly(); main?.ConnectRfid(); lblStatus.Text = "สั่งเชื่อมต่อแล้ว (ดูสถานะที่หน้าหลัก)"; lblStatus.ForeColor = Color.Green; };
+            btnDisconnect.Click += (s, e) => { main?.DisconnectRfid(); lblStatus.Text = "สั่งตัดการเชื่อมต่อแล้ว"; lblStatus.ForeColor = Color.DarkOrange; };
+            Controls.Add(btnConnect);
+            Controls.Add(btnDisconnect);
 
             lblStatus.SetBounds(20, 192, 390, 22);
 
@@ -102,6 +110,15 @@ namespace SmartGateLPR1
             SettingsStore.Save(st);
             DialogResult = DialogResult.OK;
             Close();
+        }
+        private void SaveOnly()
+        {
+            var st = SettingsStore.Load();
+            st.RfidIp = txtIp.Text.Trim();
+            st.RfidPort = int.TryParse(txtPort.Text.Trim(), out int p) ? p : 23;
+            st.RfidUser = txtUser.Text;
+            st.RfidPassword = txtPass.Text;
+            SettingsStore.Save(st);
         }
     }
 }

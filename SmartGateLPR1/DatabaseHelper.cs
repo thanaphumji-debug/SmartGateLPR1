@@ -1,4 +1,6 @@
 ﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Data.SQLite; // ต้องมีบรรทัดนี้ (ถ้าแดง ให้เช็คว่าลง NuGet System.Data.SQLite หรือยัง)
 using System.IO;
@@ -215,6 +217,86 @@ namespace SmartGateLPR1
                         da.Fill(dt);
                         return dt; // ส่งคืนผลลัพธ์ (ถ้าเจอจะมี 1 แถว, ไม่เจอคือว่างเปล่า)
                     }
+                }
+            }
+        }
+
+        public DataTable GetUserByPlate(string plateNorm)
+        {
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = "SELECT * FROM users WHERE REPLACE(REPLACE(plate_number,' ',''),'-','') = @p";
+                using (SQLiteCommand cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@p", plateNorm);
+                    using (SQLiteDataAdapter da = new SQLiteDataAdapter(cmd))
+                    {
+                        DataTable dt = new DataTable();
+                        da.Fill(dt);
+                        return dt;
+                    }
+                }
+            }
+        }
+
+        // ===== ข้อมูลเจ้าของรถ (เล่มทะเบียน) เก็บแยกตาราง ผูกกับ user_id =====
+        public void EnsureVehicleDetailsTable()
+        {
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = @"CREATE TABLE IF NOT EXISTS vehicle_details (
+                    user_id INTEGER PRIMARY KEY,
+                    veh_type TEXT, brand TEXT, model_year TEXT, chassis_no TEXT,
+                    engine_brand TEXT, engine_no TEXT,
+                    owner_name TEXT, owner_addr TEXT, owner_birth TEXT, owner_nationality TEXT,
+                    holder_name TEXT, holder_addr TEXT, holder_birth TEXT, holder_nationality TEXT )";
+                using (SQLiteCommand cmd = new SQLiteCommand(sql, conn)) cmd.ExecuteNonQuery();
+            }
+        }
+
+        public DataRow GetVehicleDetails(long userId)
+        {
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                DataTable dt = new DataTable();
+                using (SQLiteCommand cmd = new SQLiteCommand("SELECT * FROM vehicle_details WHERE user_id=@id", conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", userId);
+                    using (SQLiteDataAdapter da = new SQLiteDataAdapter(cmd)) da.Fill(dt);
+                }
+                return dt.Rows.Count > 0 ? dt.Rows[0] : null;
+            }
+        }
+
+        public void SaveVehicleDetails(long userId, Dictionary<string, string> f)
+        {
+            using (SQLiteConnection conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = @"INSERT INTO vehicle_details
+                    (user_id, veh_type, brand, model_year, chassis_no, engine_brand, engine_no,
+                     owner_name, owner_addr, owner_birth, owner_nationality,
+                     holder_name, holder_addr, holder_birth, holder_nationality)
+                    VALUES (@id,@veh_type,@brand,@model_year,@chassis_no,@engine_brand,@engine_no,
+                     @owner_name,@owner_addr,@owner_birth,@owner_nationality,
+                     @holder_name,@holder_addr,@holder_birth,@holder_nationality)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                     veh_type=@veh_type, brand=@brand, model_year=@model_year, chassis_no=@chassis_no,
+                     engine_brand=@engine_brand, engine_no=@engine_no,
+                     owner_name=@owner_name, owner_addr=@owner_addr, owner_birth=@owner_birth, owner_nationality=@owner_nationality,
+                     holder_name=@holder_name, holder_addr=@holder_addr, holder_birth=@holder_birth, holder_nationality=@holder_nationality";
+                using (SQLiteCommand cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", userId);
+                    string[] keys = { "veh_type","brand","model_year","chassis_no","engine_brand","engine_no",
+                                      "owner_name","owner_addr","owner_birth","owner_nationality",
+                                      "holder_name","holder_addr","holder_birth","holder_nationality" };
+                    foreach (string k in keys)
+                        cmd.Parameters.AddWithValue("@" + k, f.ContainsKey(k) ? (f[k] ?? "") : "");
+                    cmd.ExecuteNonQuery();
                 }
             }
         }

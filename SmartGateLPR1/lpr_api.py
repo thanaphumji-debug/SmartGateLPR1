@@ -266,6 +266,7 @@ def predict():
             "status": "success",
             "text": plate_text,
             "full_text": full_text,
+            "province": province,
             "confidence": round(confidence, 4),
             "box": [x1, y1, x2, y2], 
         })
