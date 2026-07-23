@@ -55,8 +55,26 @@ namespace SmartGateLPR1
         private DateTime[] lastDetectTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private bool[] isDetecting = new bool[3];
         private readonly object boxLock = new object();
-        private int detectIntervalMs = 200;
-        private int boxHoldMs = 1500;
+        private int detectIntervalMs = 66;
+        private int boxHoldMs = 350;
+        // ใช้ HttpClient ตัวเดียวร่วมกัน (สร้างใหม่ทุกครั้งทำให้ช้าและซ็อกเก็ตเต็ม)
+        private static readonly HttpClient httpDetect = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        private static readonly HttpClient httpPredict = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        // ตัวเข้ารหัส JPEG คุณภาพสูง (ใช้เฉพาะภาพที่ส่งไป "อ่านเลข" เท่านั้น)
+        private static System.Drawing.Imaging.ImageCodecInfo GetJpegCodec()
+        {
+            foreach (var c in System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders())
+                if (c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid) return c;
+            return null;
+        }
+        private static System.Drawing.Imaging.EncoderParameters MakeJpegQuality(long q)
+        {
+            var ps = new System.Drawing.Imaging.EncoderParameters(1);
+            ps.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, q);
+            return ps;
+        }
+        private static readonly System.Drawing.Imaging.ImageCodecInfo jpegCodec = GetJpegCodec();
+        private static readonly System.Drawing.Imaging.EncoderParameters jpegHiQ = MakeJpegQuality(95L);
 
         private Panel panelMenu;
         private Button btnMenu;
@@ -1033,13 +1051,14 @@ namespace SmartGateLPR1
 
             try
             {
-                using (var client = new HttpClient())
+                
                 {
-                    client.Timeout = TimeSpan.FromSeconds(15); // ตั้งเวลาเผื่อ AI ค้าง จะได้ตัดจบ
+                    var client = httpPredict;
 
                     using (var ms = new MemoryStream())
                     {
-                        bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        if (jpegCodec != null) bitmap.Save(ms, jpegCodec, jpegHiQ);
+                        else bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                         var content = new MultipartFormDataContent();
                         SetLprStatus(camId, "⏳ กำลังประมวลผล...", Color.Blue);
                         content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
@@ -1151,9 +1170,9 @@ namespace SmartGateLPR1
             isDetecting[camId] = true;
             try
             {
-                using (var client = new HttpClient())
+                
                 {
-                    client.Timeout = TimeSpan.FromSeconds(5);
+                    var client = httpDetect;
                     using (var ms = new MemoryStream())
                     {
                         bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);

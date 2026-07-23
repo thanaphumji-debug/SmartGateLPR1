@@ -1,5 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
-
+import os
+import threading
+model_lock = threading.RLock()
 import io
 import time
 import sys
@@ -17,13 +19,14 @@ try:
 except Exception:
     pass
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PLATE_DETECTOR_PATH = os.path.join(BASE_DIR, "plate_detector.pt")
+CHAR_DETECTOR_PATH  = os.path.join(BASE_DIR, "char_detector.pt")
 # ========================= ค่าตั้งค่า =========================
-PLATE_DETECTOR_PATH = r"C:\Users\Admin\source\repos\thanaphumji-debug\SmartGateLPR1\SmartGateLPR1\plate_detector.pt"   # ไฟล์ YOLO ที่โหลดมา
-DETECT_CONF = 0.35                           # เกณฑ์ความมั่นใจขั้นต่ำของ YOLO
-CROP_PADDING = 6                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
+DETECT_CONF = 0.25                           # เกณฑ์ความมั่นใจขั้นต่ำของ YOLO
+CROP_PADDING = 12                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
 MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดที่ OCR มั่นใจต่ำกว่านี้
 # ============================================================
-CHAR_DETECTOR_PATH = r"C:\Users\Admin\source\repos\thanaphumji-debug\SmartGateLPR1\SmartGateLPR1\char_detector.pt"
 CHAR_CONF = 0.25          # เกณฑ์ความมั่นใจของตัวอักษร
 
 CHAR_MAP = {
@@ -149,13 +152,46 @@ def _extract_lines(result):
 
 def detect_best_plate(frame):
     """รัน YOLO หาป้าย คืน [x1,y1,x2,y2] ของกล่องที่มั่นใจสุด หรือ None ถ้าไม่เจอ"""
-    det = detector(frame, conf=DETECT_CONF, verbose=False, device=YOLO_DEVICE)
+    with model_lock:
+       det = detector(frame, conf=DETECT_CONF, imgsz=1280, half=False, verbose=False, device=YOLO_DEVICE)
     boxes = det[0].boxes
     if boxes is None or len(boxes) == 0:
         return None
     best_i = int(boxes.conf.argmax())
     x1, y1, x2, y2 = map(int, boxes.xyxy[best_i].tolist())
     return [x1, y1, x2, y2]
+
+def deskew_plate(img, max_angle=25.0):
+    """หมุนภาพป้ายที่เอียงให้ตรงก่อนอ่านตัวอักษร (คืนภาพเดิมถ้าประเมินมุมไม่ได้)"""
+    try:
+        if img is None or img.size == 0:
+            return img
+        h, w = img.shape[:2]
+        if h < 10 or w < 20:
+            return img
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+
+        coords = cv2.findNonZero(th)
+        if coords is None or len(coords) < 20:
+            return img
+
+        angle = cv2.minAreaRect(coords)[-1]
+        if angle > 45:    angle -= 90
+        elif angle < -45: angle += 90
+
+        # เอียงน้อยมาก = ไม่ต้องยุ่ง / เอียงเกินไป = ประเมินมั่ว ไม่หมุนดีกว่า
+        if abs(angle) < 2 or abs(angle) > max_angle:
+            return img
+
+        M = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
+        return cv2.warpAffine(img, M, (w, h),
+                              flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        return img
 
 def read_plate_chars(plate_img):
     """
@@ -225,7 +261,8 @@ def predict():
             return jsonify({"status": "error", "message": "ภาพเสียหาย อ่านไม่ได้"})
 
         # --- 2. YOLO หากล่องป้ายในภาพเต็ม ---
-        det = detector(frame, conf=DETECT_CONF, verbose=False, device=YOLO_DEVICE)
+        with model_lock:
+            det = detector(frame, conf=DETECT_CONF, imgsz=1280, augment=True, half=False, verbose=False, device=YOLO_DEVICE)
         boxes = det[0].boxes
         if boxes is None or len(boxes) == 0:
             print("… ไม่พบป้ายในเฟรมนี้")
@@ -245,6 +282,7 @@ def predict():
 
         if plate.size == 0:
             return jsonify({"status": "error", "message": "crop ป้ายว่าง"})
+        plate = deskew_plate(plate)      # หมุนป้ายที่เอียงให้ตรงก่อนอ่าน
 
         # --- 3. YOLO ตัวที่ 2 อ่านตัวอักษรทีละตัว ---
         cv2.imwrite("debug_plate.jpg", plate)
@@ -278,4 +316,4 @@ def predict():
 
 if __name__ == "__main__":
     # threaded=False กันโมเดลถูกเรียกซ้อนกันจนพัง (ฝั่ง C# มี isAIProcessing กันคิวอยู่แล้ว)
-    app.run(host="0.0.0.0", port=5000, threaded=False)
+    app.run(host="0.0.0.0", port=5000, threaded=True)
