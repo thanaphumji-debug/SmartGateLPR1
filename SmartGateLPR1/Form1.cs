@@ -76,6 +76,7 @@ namespace SmartGateLPR1
 
         private int hybridWindowSec = 15;              // สองฝั่งต้องมาห่างกันไม่เกินกี่วินาที
         private int noPlateGraceSec = 10;    // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน
+        private int noPlateDenySec = 15;     // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปฏิเสธ (สวิตช์ 2 ปิด)
         private bool strictProvince = false;           // true = จังหวัดต้องตรงด้วยถึงเปิด
         private bool requireRfid = true;
         private bool allowNoPlate = true;
@@ -91,10 +92,10 @@ namespace SmartGateLPR1
 
         private Label PlateLabel(int camId) => camId == 1 ? lblLicensePlate1 : lblLicensePlate2;
         private Label StatusLabel(int camId) => camId == 1 ? lblLprStatus1 : lblLprStatus2;
-        private int retryMaxSec = 15;    // มีบัตรแล้ว วนอ่านป้ายซ้ำได้นานสุดกี่วิ ก่อนยอมแพ้
+        private int retryMaxSec = 20;    // มีบัตรแล้ว วนอ่านป้ายซ้ำได้นานสุดกี่วิ ก่อนยอมแพ้
         private bool sawMismatch = false;
-        
-        
+
+
 
         public btnDisconnectRFID()
         {
@@ -591,31 +592,45 @@ namespace SmartGateLPR1
                     // 2. รออ่านคำตอบ (รอคำว่า "Tag:" หรือเครื่องหมาย ">" ที่จบประโยค)
                     // เราใช้ WaitFor เพื่อดึงข้อมูลทั้งหมดที่เครื่องตอบกลับมา
                     string response = rfidTelnet.WaitFor(">");
+                    try
+                    {
+                        System.IO.File.AppendAllText("rfid_debug.txt",
+                        DateTime.Now.ToString("HH:mm:ss") + " >>> " + response + "\r\n-----\r\n");
+                    }
+                    catch { }
 
                     if (!string.IsNullOrEmpty(response))
                     {
                         // ... (โค้ดตัด string เหมือนเดิม) ...
                         string[] lines = response.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-                        foreach (string line in lines)
+                        foreach (string raw in lines)
                         {
-                            if (line.Contains("Tag:")) // เช็คว่ามีคำว่า Tag: ไหม
+                            string body = raw;
+
+                            // ตัดตั้งแต่คอมมาแรกทิ้ง (ทิ้ง Disc/Last/Count/Ant/Proto)
+                            int c = body.IndexOf(',');
+                            if (c >= 0) body = body.Substring(0, c);
+
+                            // ตัดคำว่า "Tag:" ออก ถ้ามี
+                            int t = body.IndexOf("Tag:");
+                            if (t >= 0) body = body.Substring(t + 4);
+
+                            // เก็บเฉพาะตัวอักษรฐาน 16 (ทิ้งช่องว่าง/แท็บ/อักขระแปลกทั้งหมด)
+                            var sb = new StringBuilder();
+                            foreach (char ch in body) if (Uri.IsHexDigit(ch)) sb.Append(ch);
+                            string tagId = sb.ToString().ToUpper();
+
+                            // เขียน log ไว้ดูว่าตัดได้อะไร
+                            try
                             {
-                                // ตัวอย่าง response: Tag:3000E2..., Disc:2023...
-                                int startIndex = line.IndexOf("Tag:") + 4;
-                                int endIndex = line.IndexOf(",");
-
-                                if (endIndex > startIndex)
-                                {
-                                    string tagId = line.Substring(startIndex, endIndex - startIndex).Trim();
-
-                                    this.Invoke(new Action(() =>
-                                    {
-                                        OnRfidScanned(tagId);
-                                        // เรียกฟังก์ชันถ่ายรูป/OCR ต่อตรงนี้
-                                    }));
-                                }
+                                System.IO.File.AppendAllText("rfid_debug.txt",
+                                "   ตัดได้ = [" + tagId + "] len=" + tagId.Length + "\r\n");
                             }
+                            catch { }
+
+                            if (tagId.Length >= 8)
+                                this.Invoke(new Action(() => OnRfidScanned(tagId)));
                         }
                     }
 
@@ -926,6 +941,7 @@ namespace SmartGateLPR1
             string tagOnlyGrant = null;
             string tagMismatchDeny = null;
             bool plateNoTagDeny = false;
+            bool noPlateDeny = false;
 
             lock (hybridLock)
             {
@@ -935,10 +951,18 @@ namespace SmartGateLPR1
                 bool havePlate = pendingPlateCam[1] != "" || pendingPlateCam[2] != "";
 
                 // เคสA: มีบัตร ไม่มีป้าย ไม่เคยเจอป้ายผิด + ครบ 10 วิ → อนุญาต (รถไม่ติดป้าย)
-                if (haveRfid && !havePlate && !sawMismatch &&
+                if (haveRfid && !havePlate && !sawMismatch && allowNoPlate &&
                     (DateTime.Now - pendingRfidTime).TotalSeconds >= noPlateGraceSec)
                 {
                     tagOnlyGrant = pendingRfidTag;
+                    gateBusy = true;
+                    pendingRfidTag = "";
+                }
+                // เคสA2: มีบัตร ไม่มีป้าย + สวิตช์ 2 ปิด + ครบ 15 วิ → ปฏิเสธ
+                else if (haveRfid && !havePlate && !sawMismatch && !allowNoPlate &&
+                         (DateTime.Now - pendingRfidTime).TotalSeconds >= noPlateDenySec)
+                {
+                    noPlateDeny = true;
                     gateBusy = true;
                     pendingRfidTag = "";
                 }
@@ -976,8 +1000,10 @@ namespace SmartGateLPR1
             if (tagOnlyGrant != null) GrantAccessNoPlate(tagOnlyGrant);
             else if (tagMismatchDeny != null)
                 DenyAccess("⛔ ป้ายทะเบียนไม่ตรงกับบัตร (ตรวจสอบซ้ำแล้ว)");
-            else if (plateNoTagDeny)                                              
-                DenyAccess("⛔ ตรวจพบป้ายทะเบียน แต่ไม่พบแท็ก RFID");           
+            else if (plateNoTagDeny)
+                DenyAccess("⛔ ตรวจพบป้ายทะเบียน แต่ไม่พบแท็ก RFID");
+            else if (noPlateDeny)                                              // ⬅️ เพิ่ม
+                DenyAccess("⛔ ไม่พบป้ายทะเบียน ");
         }
 
         private void label3_Click_1(object sender, EventArgs e)
@@ -1158,13 +1184,13 @@ namespace SmartGateLPR1
                                     Task.Run(() => SendToAI(readFrame, camId));
                                 }
                             }
-                            else 
-                            { 
+                            else
+                            {
                                 hasPlateBox[camId] = false;
                                 lock (hybridLock) plateSeen[camId] = false;    // ⬅️ เพิ่ม
                                 UpdateLprZone(camId);
                             }
-                            
+
                         }
                     }
                 }
@@ -1269,6 +1295,9 @@ namespace SmartGateLPR1
 
         }
 
+        private void btnDisconnectRFID_Load(object sender, EventArgs e)
+        {
 
+        }
     }
 }

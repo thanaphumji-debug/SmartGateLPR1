@@ -111,6 +111,31 @@ namespace SmartGateLPR1
             }
         }
 
+        // แก้ไขข้อมูลรถที่บันทึกไว้แล้ว (ตาม id)
+        public void UpdateUserFull(long id, string letters, string digits, string province,
+                                   string permission, string rfid)
+        {
+            using (var conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = @"UPDATE users SET
+                        plate_number = @pn, plate_letters = @pl, plate_digits = @pd,
+                        province = @pv, permission = @pm, rfid_tag = @r
+                    WHERE id = @id";
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@pn", letters + digits);
+                    cmd.Parameters.AddWithValue("@pl", letters);
+                    cmd.Parameters.AddWithValue("@pd", digits);
+                    cmd.Parameters.AddWithValue("@pv", province);
+                    cmd.Parameters.AddWithValue("@pm", permission);
+                    cmd.Parameters.AddWithValue("@r", rfid);
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
         public void DeleteUserById(long id)
         {
             using (var conn = new SQLiteConnection(connectionString))
@@ -206,10 +231,10 @@ namespace SmartGateLPR1
             using (SQLiteConnection conn = new SQLiteConnection(connectionString))
             {
                 conn.Open();
-                string sql = "SELECT * FROM users WHERE rfid_tag = @tag";
+                string sql = "SELECT * FROM users WHERE REPLACE(REPLACE(UPPER(rfid_tag),' ',''),'-','') = @tag";
                 using (SQLiteCommand cmd = new SQLiteCommand(sql, conn))
                 {
-                    cmd.Parameters.AddWithValue("@tag", tag);
+                    cmd.Parameters.AddWithValue("@tag", (tag ?? "").Replace(" ", "").Replace("-", "").ToUpper());
 
                     using (SQLiteDataAdapter da = new SQLiteDataAdapter(cmd))
                     {

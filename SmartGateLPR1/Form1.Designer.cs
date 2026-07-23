@@ -51,8 +51,8 @@
             btnScan = new Button();
             lblResult = new Label();
             groupBox2 = new GroupBox();
-            lblRfidStatus = new Label();
             txtRFIDInput2 = new Label();
+            lblRfidStatus = new Label();
             groupBox3 = new GroupBox();
             groupBox6 = new GroupBox();
             lblLicensePlate2 = new Label();
@@ -74,9 +74,11 @@
             // 
             // pbCamera1
             // 
-            pbCamera1.Location = new Point(30, 53);
+            pbCamera1.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
+            pbCamera1.Location = new Point(820, 71);
+            pbCamera1.Margin = new Padding(3, 4, 3, 4);
             pbCamera1.Name = "pbCamera1";
-            pbCamera1.Size = new Size(622, 406);
+            pbCamera1.Size = new Size(775, 541);
             pbCamera1.SizeMode = PictureBoxSizeMode.Zoom;
             pbCamera1.TabIndex = 0;
             pbCamera1.TabStop = false;
@@ -84,9 +86,10 @@
             // 
             // btnStartCamera
             // 
-            btnStartCamera.Location = new Point(658, 421);
+            btnStartCamera.Location = new Point(753, 16);
+            btnStartCamera.Margin = new Padding(3, 4, 3, 4);
             btnStartCamera.Name = "btnStartCamera";
-            btnStartCamera.Size = new Size(94, 23);
+            btnStartCamera.Size = new Size(107, 31);
             btnStartCamera.TabIndex = 1;
             btnStartCamera.Text = "Stream camera";
             btnStartCamera.UseVisualStyleBackColor = true;
@@ -95,19 +98,22 @@
             // 
             // txtRTSP
             // 
-            txtRTSP.Location = new Point(1331, 667);
+            txtRTSP.Location = new Point(1521, 889);
+            txtRTSP.Margin = new Padding(3, 4, 3, 4);
             txtRTSP.Name = "txtRTSP";
             txtRTSP.PlaceholderText = "ตัวอย่าง rtsp://USERNAME:PASSWORD@IP_ADDRESS/stream1";
-            txtRTSP.Size = new Size(42, 23);
+            txtRTSP.Size = new Size(47, 27);
             txtRTSP.TabIndex = 2;
             txtRTSP.Visible = false;
             txtRTSP.TextChanged += txtRTSP_TextChanged;
             // 
             // pbCamera2
             // 
-            pbCamera2.Location = new Point(751, 53);
+            pbCamera2.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
+            pbCamera2.Location = new Point(12, 71);
+            pbCamera2.Margin = new Padding(3, 4, 3, 4);
             pbCamera2.Name = "pbCamera2";
-            pbCamera2.Size = new Size(622, 406);
+            pbCamera2.Size = new Size(787, 541);
             pbCamera2.SizeMode = PictureBoxSizeMode.Zoom;
             pbCamera2.TabIndex = 11;
             pbCamera2.TabStop = false;
@@ -115,10 +121,11 @@
             // txtRTSP2
             // 
             txtRTSP2.ForeColor = Color.Black;
-            txtRTSP2.Location = new Point(1321, 696);
+            txtRTSP2.Location = new Point(1510, 928);
+            txtRTSP2.Margin = new Padding(3, 4, 3, 4);
             txtRTSP2.Name = "txtRTSP2";
             txtRTSP2.PlaceholderText = "ตัวอย่าง rtsp://USERNAME:PASSWORD@IP_ADDRESS/stream1";
-            txtRTSP2.Size = new Size(52, 23);
+            txtRTSP2.Size = new Size(59, 27);
             txtRTSP2.TabIndex = 12;
             txtRTSP2.Visible = false;
             // 
@@ -127,9 +134,11 @@
             groupBox1.Controls.Add(btnConnectRFID);
             groupBox1.Controls.Add(txtRfidPort);
             groupBox1.Controls.Add(txtRfidIP);
-            groupBox1.Location = new Point(1151, 509);
+            groupBox1.Location = new Point(1300, 460);
+            groupBox1.Margin = new Padding(3, 4, 3, 4);
             groupBox1.Name = "groupBox1";
-            groupBox1.Size = new Size(235, 128);
+            groupBox1.Padding = new Padding(3, 4, 3, 4);
+            groupBox1.Size = new Size(269, 171);
             groupBox1.TabIndex = 13;
             groupBox1.TabStop = false;
             groupBox1.Text = "การเชื่อมต่อ RFID";
@@ -138,9 +147,10 @@
             // 
             // btnConnectRFID
             // 
-            btnConnectRFID.Location = new Point(145, 36);
+            btnConnectRFID.Location = new Point(166, 48);
+            btnConnectRFID.Margin = new Padding(3, 4, 3, 4);
             btnConnectRFID.Name = "btnConnectRFID";
-            btnConnectRFID.Size = new Size(87, 23);
+            btnConnectRFID.Size = new Size(99, 31);
             btnConnectRFID.TabIndex = 3;
             btnConnectRFID.Text = "เชื่อมต่อ RFID";
             btnConnectRFID.UseVisualStyleBackColor = true;
@@ -148,55 +158,60 @@
             // 
             // txtRfidPort
             // 
-            txtRfidPort.Location = new Point(6, 77);
+            txtRfidPort.Location = new Point(7, 103);
+            txtRfidPort.Margin = new Padding(3, 4, 3, 4);
             txtRfidPort.Name = "txtRfidPort";
             txtRfidPort.PlaceholderText = "Port";
-            txtRfidPort.Size = new Size(100, 23);
+            txtRfidPort.Size = new Size(114, 27);
             txtRfidPort.TabIndex = 1;
             txtRfidPort.TextChanged += txtRfidPort_TextChanged;
             // 
             // txtRfidIP
             // 
-            txtRfidIP.Location = new Point(6, 36);
+            txtRfidIP.Location = new Point(7, 48);
+            txtRfidIP.Margin = new Padding(3, 4, 3, 4);
             txtRfidIP.Name = "txtRfidIP";
             txtRfidIP.PlaceholderText = "IP address";
-            txtRfidIP.Size = new Size(100, 23);
+            txtRfidIP.Size = new Size(114, 27);
             txtRfidIP.TabIndex = 0;
             // 
             // lblRfidStatus1
             // 
             lblRfidStatus1.AutoSize = true;
             lblRfidStatus1.ForeColor = Color.Red;
-            lblRfidStatus1.Location = new Point(6, 264);
+            lblRfidStatus1.Location = new Point(7, 352);
             lblRfidStatus1.Name = "lblRfidStatus1";
-            lblRfidStatus1.Size = new Size(101, 15);
+            lblRfidStatus1.Size = new Size(128, 20);
             lblRfidStatus1.TabIndex = 2;
             lblRfidStatus1.Text = "สถานะ: ยังไม่เชื่อมต่อ";
             lblRfidStatus1.Click += lblRfidStatus1_Click;
             // 
             // label1
             // 
+            label1.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
             label1.AutoSize = true;
-            label1.Location = new Point(317, 20);
+            label1.Location = new Point(357, 27);
             label1.Name = "label1";
-            label1.Size = new Size(54, 15);
+            label1.Size = new Size(68, 20);
             label1.TabIndex = 14;
             label1.Text = "Camera1";
             // 
             // label2
             // 
+            label2.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
             label2.AutoSize = true;
-            label2.Location = new Point(1042, 20);
+            label2.Location = new Point(1195, 27);
             label2.Name = "label2";
-            label2.Size = new Size(54, 15);
+            label2.Size = new Size(68, 20);
             label2.TabIndex = 15;
             label2.Text = "Camera2";
             // 
             // btnOpenManage
             // 
-            btnOpenManage.Location = new Point(1247, 737);
+            btnOpenManage.Location = new Point(1425, 983);
+            btnOpenManage.Margin = new Padding(3, 4, 3, 4);
             btnOpenManage.Name = "btnOpenManage";
-            btnOpenManage.Size = new Size(90, 23);
+            btnOpenManage.Size = new Size(103, 31);
             btnOpenManage.TabIndex = 16;
             btnOpenManage.Text = "การจัดการ RFID";
             btnOpenManage.UseVisualStyleBackColor = true;
@@ -205,10 +220,11 @@
             // 
             // txtSimulateRFID
             // 
-            txtSimulateRFID.Location = new Point(39, 47);
+            txtSimulateRFID.Location = new Point(45, 63);
+            txtSimulateRFID.Margin = new Padding(3, 4, 3, 4);
             txtSimulateRFID.Name = "txtSimulateRFID";
             txtSimulateRFID.PlaceholderText = "การอนุญาตพิเศษ";
-            txtSimulateRFID.Size = new Size(144, 23);
+            txtSimulateRFID.Size = new Size(164, 27);
             txtSimulateRFID.TabIndex = 18;
             txtSimulateRFID.TextChanged += txtSimulateRFID_TextChanged;
             txtSimulateRFID.KeyDown += txtSimulateRFID_KeyDown;
@@ -216,36 +232,37 @@
             // lblStatus
             // 
             lblStatus.AutoSize = true;
-            lblStatus.Location = new Point(39, 145);
+            lblStatus.Location = new Point(45, 193);
             lblStatus.Name = "lblStatus";
-            lblStatus.Size = new Size(107, 15);
+            lblStatus.Size = new Size(139, 20);
             lblStatus.TabIndex = 19;
             lblStatus.Text = "รายละเอียดการอนุญาต";
             // 
             // lblShowPlate
             // 
             lblShowPlate.AutoSize = true;
-            lblShowPlate.Location = new Point(39, 84);
+            lblShowPlate.Location = new Point(45, 112);
             lblShowPlate.Name = "lblShowPlate";
-            lblShowPlate.Size = new Size(92, 15);
+            lblShowPlate.Size = new Size(118, 20);
             lblShowPlate.TabIndex = 20;
             lblShowPlate.Text = "เลขทะเบียนในระบบ";
             // 
             // lblShowName
             // 
             lblShowName.AutoSize = true;
-            lblShowName.Location = new Point(39, 115);
+            lblShowName.Location = new Point(45, 153);
             lblShowName.Name = "lblShowName";
-            lblShowName.Size = new Size(78, 15);
+            lblShowName.Size = new Size(101, 20);
             lblShowName.TabIndex = 21;
             lblShowName.Text = "สิทธิ์การอนุญาต";
             // 
             // picGate
             // 
             picGate.BackColor = Color.Red;
-            picGate.Location = new Point(39, 190);
+            picGate.Location = new Point(45, 253);
+            picGate.Margin = new Padding(3, 4, 3, 4);
             picGate.Name = "picGate";
-            picGate.Size = new Size(100, 50);
+            picGate.Size = new Size(114, 67);
             picGate.TabIndex = 22;
             picGate.TabStop = false;
             // 
@@ -255,9 +272,10 @@
             // 
             // btnScan
             // 
-            btnScan.Location = new Point(1263, 716);
+            btnScan.Location = new Point(1443, 955);
+            btnScan.Margin = new Padding(3, 4, 3, 4);
             btnScan.Name = "btnScan";
-            btnScan.Size = new Size(123, 24);
+            btnScan.Size = new Size(141, 32);
             btnScan.TabIndex = 23;
             btnScan.Text = "ตรวจสอบป้ายทะเบียน";
             btnScan.UseVisualStyleBackColor = true;
@@ -267,50 +285,57 @@
             // 
             lblResult.AutoSize = true;
             lblResult.Font = new Font("Tahoma", 15.75F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            lblResult.Location = new Point(170, 202);
+            lblResult.Location = new Point(194, 269);
             lblResult.Name = "lblResult";
-            lblResult.Size = new Size(136, 25);
+            lblResult.Size = new Size(175, 33);
             lblResult.TabIndex = 24;
             lblResult.Text = "ผลการอนุญาต";
             lblResult.Click += label3_Click_1;
             // 
             // groupBox2
             // 
-            groupBox2.Controls.Add(lblRfidStatus);
+            groupBox2.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
             groupBox2.Controls.Add(txtRFIDInput2);
+            groupBox2.Controls.Add(lblRfidStatus);
             groupBox2.Controls.Add(lblRfidStatus1);
-            groupBox2.Location = new Point(30, 477);
+            groupBox2.Location = new Point(46, 639);
+            groupBox2.Margin = new Padding(3, 4, 3, 4);
             groupBox2.Name = "groupBox2";
-            groupBox2.Size = new Size(417, 302);
+            groupBox2.Padding = new Padding(3, 4, 3, 4);
+            groupBox2.Size = new Size(477, 403);
             groupBox2.TabIndex = 26;
             groupBox2.TabStop = false;
             groupBox2.Text = "RFID";
             // 
-            // lblRfidStatus
-            // 
-            lblRfidStatus.AutoSize = true;
-            lblRfidStatus.Location = new Point(42, 109);
-            lblRfidStatus.Name = "lblRfidStatus";
-            lblRfidStatus.Size = new Size(65, 15);
-            lblRfidStatus.TabIndex = 25;
-            lblRfidStatus.Text = "RFID status";
-            // 
             // txtRFIDInput2
             // 
             txtRFIDInput2.AutoSize = true;
-            txtRFIDInput2.Location = new Point(42, 55);
+            txtRFIDInput2.ForeColor = Color.DarkGreen;
+            txtRFIDInput2.Location = new Point(48, 73);
             txtRFIDInput2.Name = "txtRFIDInput2";
-            txtRFIDInput2.Size = new Size(43, 15);
-            txtRFIDInput2.TabIndex = 18;
-            txtRFIDInput2.Text = "เลขแท็ก";
+            txtRFIDInput2.Size = new Size(120, 20);
+            txtRFIDInput2.TabIndex = 26;
+            txtRFIDInput2.Text = "แสดงเลขแท็ก RFID";
+            // 
+            // lblRfidStatus
+            // 
+            lblRfidStatus.AutoSize = true;
+            lblRfidStatus.Location = new Point(48, 145);
+            lblRfidStatus.Name = "lblRfidStatus";
+            lblRfidStatus.Size = new Size(82, 20);
+            lblRfidStatus.TabIndex = 25;
+            lblRfidStatus.Text = "RFID status";
             // 
             // groupBox3
             // 
+            groupBox3.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
             groupBox3.Controls.Add(groupBox6);
             groupBox3.Controls.Add(groupBox5);
-            groupBox3.Location = new Point(453, 477);
+            groupBox3.Location = new Point(529, 636);
+            groupBox3.Margin = new Padding(3, 4, 3, 4);
             groupBox3.Name = "groupBox3";
-            groupBox3.Size = new Size(464, 302);
+            groupBox3.Padding = new Padding(3, 4, 3, 4);
+            groupBox3.Size = new Size(519, 403);
             groupBox3.TabIndex = 27;
             groupBox3.TabStop = false;
             groupBox3.Text = "LPR";
@@ -320,9 +345,11 @@
             // 
             groupBox6.Controls.Add(lblLicensePlate2);
             groupBox6.Controls.Add(lblLprStatus2);
-            groupBox6.Location = new Point(246, 22);
+            groupBox6.Location = new Point(270, 28);
+            groupBox6.Margin = new Padding(3, 4, 3, 4);
             groupBox6.Name = "groupBox6";
-            groupBox6.Size = new Size(200, 261);
+            groupBox6.Padding = new Padding(3, 4, 3, 4);
+            groupBox6.Size = new Size(240, 348);
             groupBox6.TabIndex = 34;
             groupBox6.TabStop = false;
             groupBox6.Text = "กล้องตัวที่ 2";
@@ -331,9 +358,9 @@
             // 
             lblLicensePlate2.AutoSize = true;
             lblLicensePlate2.ForeColor = Color.DarkBlue;
-            lblLicensePlate2.Location = new Point(35, 66);
+            lblLicensePlate2.Location = new Point(40, 88);
             lblLicensePlate2.Name = "lblLicensePlate2";
-            lblLicensePlate2.Size = new Size(81, 15);
+            lblLicensePlate2.Size = new Size(104, 20);
             lblLicensePlate2.TabIndex = 31;
             lblLicensePlate2.Text = "แสดงเลขทะเบียน";
             // 
@@ -341,9 +368,9 @@
             // 
             lblLprStatus2.AutoSize = true;
             lblLprStatus2.ForeColor = Color.DarkBlue;
-            lblLprStatus2.Location = new Point(35, 168);
+            lblLprStatus2.Location = new Point(40, 224);
             lblLprStatus2.Name = "lblLprStatus2";
-            lblLprStatus2.Size = new Size(141, 15);
+            lblLprStatus2.Size = new Size(184, 20);
             lblLprStatus2.TabIndex = 32;
             lblLprStatus2.Text = "สถานะการตรวจจับป้ายทะเบียน";
             // 
@@ -351,9 +378,11 @@
             // 
             groupBox5.Controls.Add(lblLicensePlate1);
             groupBox5.Controls.Add(lblLprStatus1);
-            groupBox5.Location = new Point(20, 22);
+            groupBox5.Location = new Point(21, 30);
+            groupBox5.Margin = new Padding(3, 4, 3, 4);
             groupBox5.Name = "groupBox5";
-            groupBox5.Size = new Size(200, 261);
+            groupBox5.Padding = new Padding(3, 4, 3, 4);
+            groupBox5.Size = new Size(229, 348);
             groupBox5.TabIndex = 33;
             groupBox5.TabStop = false;
             groupBox5.Text = "กล้องตัวที่ 1";
@@ -362,9 +391,9 @@
             // 
             lblLicensePlate1.AutoSize = true;
             lblLicensePlate1.ForeColor = Color.DarkBlue;
-            lblLicensePlate1.Location = new Point(35, 66);
+            lblLicensePlate1.Location = new Point(40, 88);
             lblLicensePlate1.Name = "lblLicensePlate1";
-            lblLicensePlate1.Size = new Size(81, 15);
+            lblLicensePlate1.Size = new Size(104, 20);
             lblLicensePlate1.TabIndex = 29;
             lblLicensePlate1.Text = "แสดงเลขทะเบียน";
             // 
@@ -372,33 +401,36 @@
             // 
             lblLprStatus1.AutoSize = true;
             lblLprStatus1.ForeColor = Color.DarkBlue;
-            lblLprStatus1.Location = new Point(35, 168);
+            lblLprStatus1.Location = new Point(40, 224);
             lblLprStatus1.Name = "lblLprStatus1";
-            lblLprStatus1.Size = new Size(141, 15);
+            lblLprStatus1.Size = new Size(184, 20);
             lblLprStatus1.TabIndex = 28;
             lblLprStatus1.Text = "สถานะการตรวจจับป้ายทะเบียน";
             // 
             // groupBox4
             // 
+            groupBox4.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
             groupBox4.Controls.Add(txtSimulateRFID);
             groupBox4.Controls.Add(lblShowPlate);
             groupBox4.Controls.Add(lblShowName);
             groupBox4.Controls.Add(lblResult);
             groupBox4.Controls.Add(lblStatus);
             groupBox4.Controls.Add(picGate);
-            groupBox4.Location = new Point(923, 477);
+            groupBox4.Location = new Point(1055, 639);
+            groupBox4.Margin = new Padding(3, 4, 3, 4);
             groupBox4.Name = "groupBox4";
-            groupBox4.Size = new Size(450, 302);
+            groupBox4.Padding = new Padding(3, 4, 3, 4);
+            groupBox4.Size = new Size(514, 403);
             groupBox4.TabIndex = 27;
             groupBox4.TabStop = false;
             groupBox4.Text = "การอนุญาตเข้า-ออก";
             // 
             // btnDisconnectRFID
             // 
-            AutoScaleDimensions = new SizeF(7F, 15F);
+            AutoScaleDimensions = new SizeF(8F, 20F);
             AutoScaleMode = AutoScaleMode.Font;
             BackgroundImageLayout = ImageLayout.Center;
-            ClientSize = new Size(1398, 791);
+            ClientSize = new Size(1607, 1055);
             Controls.Add(groupBox3);
             Controls.Add(groupBox4);
             Controls.Add(groupBox2);
@@ -406,15 +438,18 @@
             Controls.Add(label2);
             Controls.Add(btnScan);
             Controls.Add(label1);
-            Controls.Add(groupBox1);
             Controls.Add(txtRTSP2);
             Controls.Add(pbCamera2);
             Controls.Add(txtRTSP);
             Controls.Add(btnStartCamera);
             Controls.Add(pbCamera1);
+            Controls.Add(groupBox1);
             ForeColor = Color.Black;
+            Margin = new Padding(3, 4, 3, 4);
             Name = "btnDisconnectRFID";
             Text = "Form1";
+            WindowState = FormWindowState.Minimized;
+            Load += btnDisconnectRFID_Load;
             ((System.ComponentModel.ISupportInitialize)pbCamera1).EndInit();
             ((System.ComponentModel.ISupportInitialize)pbCamera2).EndInit();
             groupBox1.ResumeLayout(false);
@@ -464,11 +499,11 @@
         private Label label4;
         private Label label3;
         private Label lblRfidStatus;
-        private Label txtRFIDInput2;
         private GroupBox groupBox6;
         private Label lblLicensePlate2;
         private Label lblLprStatus2;
         private GroupBox groupBox5;
         private Label lblLicensePlate1;
+        private Label txtRFIDInput2;
     }
 }

@@ -18,12 +18,12 @@ except Exception:
     pass
 
 # ========================= ค่าตั้งค่า =========================
-PLATE_DETECTOR_PATH = r"C:\Users\Gigabyte_2\source\repos\thanaphumji-debug\SmartGateLPR1\SmartGateLPR1\plate_detector.pt"   # ไฟล์ YOLO ที่โหลดมา
+PLATE_DETECTOR_PATH = r"C:\Users\Admin\source\repos\thanaphumji-debug\SmartGateLPR1\SmartGateLPR1\plate_detector.pt"   # ไฟล์ YOLO ที่โหลดมา
 DETECT_CONF = 0.35                           # เกณฑ์ความมั่นใจขั้นต่ำของ YOLO
 CROP_PADDING = 6                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
 MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดที่ OCR มั่นใจต่ำกว่านี้
 # ============================================================
-CHAR_DETECTOR_PATH = r"C:\Users\Gigabyte_2\source\repos\thanaphumji-debug\SmartGateLPR1\SmartGateLPR1\char_detector.pt"
+CHAR_DETECTOR_PATH = r"C:\Users\Admin\source\repos\thanaphumji-debug\SmartGateLPR1\SmartGateLPR1\char_detector.pt"
 CHAR_CONF = 0.25          # เกณฑ์ความมั่นใจของตัวอักษร
 
 CHAR_MAP = {

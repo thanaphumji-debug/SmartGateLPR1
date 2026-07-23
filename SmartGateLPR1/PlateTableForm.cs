@@ -145,10 +145,10 @@ namespace SmartGateLPR1
         private void BtnSave_Click(object sender, EventArgs e)
         {
             dgv.EndEdit();
-            int saved = 0, skipped = 0;
+            int added = 0, updated = 0, skipped = 0;
             foreach (DataGridViewRow row in dgv.Rows)
             {
-                if (row.Cells["colId"].Value != null) continue;   // แถวเก่าในฐานข้อมูลแล้ว ข้าม
+                if (row.IsNewRow) continue;
 
                 string letters = (row.Cells["colLetters"].Value ?? "").ToString().Trim();
                 string digits = (row.Cells["colDigits"].Value ?? "").ToString().Trim();
@@ -156,18 +156,36 @@ namespace SmartGateLPR1
                 string perm = (row.Cells["colPermission"].Value ?? "").ToString();
                 string rfid = (row.Cells["colRfid"].Value ?? "").ToString().Trim();
 
-                if (letters == "" || digits == "" || prov == "" || rfid == "")
-                { skipped++; continue; }   // กรอกไม่ครบ ข้าม (แถวยังอยู่ให้กรอกต่อ)
+                var idCell = row.Cells["colId"].Value;
+                bool isExisting = idCell != null && idCell != DBNull.Value;
 
-                try { db.AddUserFull(letters, digits, prov, perm, rfid); saved++; }
+                // แถวใหม่ที่ยังว่างล้วน → ข้ามเงียบ ๆ ไม่นับว่ากรอกไม่ครบ
+                if (!isExisting && letters == "" && digits == "" && rfid == "") continue;
+
+                if (letters == "" || digits == "" || prov == "" || rfid == "")
+                { skipped++; continue; }
+
+                try
+                {
+                    if (isExisting)
+                    {
+                        db.UpdateUserFull(Convert.ToInt64(idCell), letters, digits, prov, perm, rfid);
+                        updated++;
+                    }
+                    else
+                    {
+                        db.AddUserFull(letters, digits, prov, perm, rfid);
+                        added++;
+                    }
+                }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"บันทึกแถว {letters}{digits} ไม่ได้: {ex.Message}\n(RFID ซ้ำกับที่มีอยู่หรือไม่?)");
                 }
             }
 
-            string msg = $"บันทึกสำเร็จ {saved} รายการ";
-            if (skipped > 0) msg += $" (ข้าม {skipped} แถวที่กรอกไม่ครบ)";
+            string msg = $"เพิ่มใหม่ {added} รายการ / แก้ไข {updated} รายการ";
+            if (skipped > 0) msg += $"\n(ข้าม {skipped} แถวที่กรอกไม่ครบ)";
             MessageBox.Show(msg);
             LoadData();
         }
