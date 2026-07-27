@@ -9,9 +9,8 @@ namespace SmartGateLPR1
 {
     public class DatabaseHelper
     {
-        // ชื่อไฟล์ Database จะถูกสร้างในโฟลเดอร์ debug/bin ของโปรเจค
-        private string dbFile = "smartgate.db";
         private string connectionString;
+        private string dbPath;            // path จริงของไฟล์ .db (ใช้หาโฟลเดอร์เก็บภาพ)
 
         public DatabaseHelper()
         {
@@ -25,10 +24,12 @@ namespace SmartGateLPR1
             }
 
             // 3. กำหนด Connection String ไปที่นั่น
+            dbPath = System.IO.Path.GetFullPath(savedPath);
             connectionString = $"Data Source={savedPath};Version=3;";
 
             // 4. สร้างตาราง (ถ้ายังไม่มี)
             InitializeDatabase();
+            EnsureAccessLogTable();
         }
 
         // --- ส่วนฟังก์ชันสร้างตาราง (เพิ่มเข้าไป) ---
@@ -144,48 +145,6 @@ namespace SmartGateLPR1
                 using (var cmd = new SQLiteCommand("DELETE FROM users WHERE id = @id", conn))
                 {
                     cmd.Parameters.AddWithValue("@id", id);
-                    cmd.ExecuteNonQuery();
-                }
-            }
-        }
-
-        // 3. ฟังก์ชันตรวจสอบสิทธิ์ (Check Access)
-        // คืนค่าเป็น ชื่อเจ้าของรถ ถ้าเจอ, คืนค่า null ถ้าไม่เจอ
-        public string CheckPermission(string plate, string rfid)
-        {
-            using (var conn = new SQLiteConnection(connectionString))
-            {
-                conn.Open();
-                // ค้นหาว่ามีทะเบียนนี้ หรือ RFID นี้ ในระบบไหม
-                string sql = "SELECT owner_name FROM tb_users WHERE plate_number = @p OR rfid_code = @r";
-                using (var cmd = new SQLiteCommand(sql, conn))
-                {
-                    cmd.Parameters.AddWithValue("@p", plate);
-                    cmd.Parameters.AddWithValue("@r", rfid);
-
-                    var result = cmd.ExecuteScalar(); // ดึงผลลัพธ์ช่องแรก
-                    if (result != null)
-                    {
-                        return result.ToString(); // เจอ! คืนชื่อเจ้าของ
-                    }
-                }
-            }
-            return null; // ไม่เจอ
-        }
-
-        // 4. ฟังก์ชันบันทึก Log
-        public void SaveLog(string plate, string rfid, string imagePath, string status)
-        {
-            using (var conn = new SQLiteConnection(connectionString))
-            {
-                conn.Open();
-                string sql = "INSERT INTO tb_logs (plate_read, rfid_read, image_path, status) VALUES (@p, @r, @img, @st)";
-                using (var cmd = new SQLiteCommand(sql, conn))
-                {
-                    cmd.Parameters.AddWithValue("@p", plate);
-                    cmd.Parameters.AddWithValue("@r", rfid);
-                    cmd.Parameters.AddWithValue("@img", imagePath);
-                    cmd.Parameters.AddWithValue("@st", status);
                     cmd.ExecuteNonQuery();
                 }
             }
@@ -321,6 +280,121 @@ namespace SmartGateLPR1
                                       "holder_name","holder_addr","holder_birth","holder_nationality" };
                     foreach (string k in keys)
                         cmd.Parameters.AddWithValue("@" + k, f.ContainsKey(k) ? (f[k] ?? "") : "");
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        // ===================== ประวัติการผ่านเข้า-ออก =====================
+
+        /// <summary>โฟลเดอร์เก็บภาพประวัติ อยู่ข้างไฟล์ฐานข้อมูล แยกตามวัน</summary>
+        public string GetLogImageDir(DateTime when)
+        {
+            string baseDir = System.IO.Path.GetDirectoryName(dbPath);
+            if (string.IsNullOrEmpty(baseDir)) baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string dir = System.IO.Path.Combine(baseDir, "logs", when.ToString("yyyy-MM-dd"));
+            System.IO.Directory.CreateDirectory(dir);
+            return dir;
+        }
+
+        public void EnsureAccessLogTable()
+        {
+            using (var conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = @"CREATE TABLE IF NOT EXISTS access_logs (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts           TEXT,      -- เวลา (yyyy-MM-dd HH:mm:ss)
+                    result       TEXT,      -- ALLOWED / DENIED
+                    reason       TEXT,      -- รายละเอียดผลการตรวจ
+                    mode         TEXT,      -- RFID / LPR
+                    rfid_tag     TEXT,      -- เลขแท็กที่อ่านได้
+                    plate_cam1   TEXT,      -- ทะเบียนที่กล้องหน้าอ่านได้
+                    plate_cam2   TEXT,      -- ทะเบียนที่กล้องหลังอ่านได้
+                    plate_db     TEXT,      -- ทะเบียนที่ตรงกับฐานข้อมูล
+                    province     TEXT,
+                    owner_name   TEXT,
+                    permission   TEXT,      -- ลูกค้าทั่วไป / บุคลากร
+                    img_wide1    TEXT,      -- ภาพมุมกว้าง กล้องหน้า
+                    img_wide2    TEXT,      -- ภาพมุมกว้าง กล้องหลัง
+                    img_plate1   TEXT,      -- ภาพซูมป้าย กล้องหน้า
+                    img_plate2   TEXT       -- ภาพซูมป้าย กล้องหลัง
+                )";
+                using (var cmd = new SQLiteCommand(sql, conn)) cmd.ExecuteNonQuery();
+            }
+        }
+
+        public long SaveAccessLog(DateTime ts, string result, string reason, string mode,
+                                  string rfidTag, string plateCam1, string plateCam2,
+                                  string plateDb, string province, string ownerName, string permission,
+                                  string imgWide1, string imgWide2, string imgPlate1, string imgPlate2)
+        {
+            using (var conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = @"INSERT INTO access_logs
+                    (ts, result, reason, mode, rfid_tag, plate_cam1, plate_cam2, plate_db,
+                     province, owner_name, permission, img_wide1, img_wide2, img_plate1, img_plate2)
+                    VALUES (@ts,@res,@rea,@mode,@tag,@p1,@p2,@pdb,@prov,@own,@perm,@w1,@w2,@c1,@c2);
+                    SELECT last_insert_rowid();";
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@ts", ts.ToString("yyyy-MM-dd HH:mm:ss"));
+                    cmd.Parameters.AddWithValue("@res", result ?? "");
+                    cmd.Parameters.AddWithValue("@rea", reason ?? "");
+                    cmd.Parameters.AddWithValue("@mode", mode ?? "");
+                    cmd.Parameters.AddWithValue("@tag", rfidTag ?? "");
+                    cmd.Parameters.AddWithValue("@p1", plateCam1 ?? "");
+                    cmd.Parameters.AddWithValue("@p2", plateCam2 ?? "");
+                    cmd.Parameters.AddWithValue("@pdb", plateDb ?? "");
+                    cmd.Parameters.AddWithValue("@prov", province ?? "");
+                    cmd.Parameters.AddWithValue("@own", ownerName ?? "");
+                    cmd.Parameters.AddWithValue("@perm", permission ?? "");
+                    cmd.Parameters.AddWithValue("@w1", imgWide1 ?? "");
+                    cmd.Parameters.AddWithValue("@w2", imgWide2 ?? "");
+                    cmd.Parameters.AddWithValue("@c1", imgPlate1 ?? "");
+                    cmd.Parameters.AddWithValue("@c2", imgPlate2 ?? "");
+                    object id = cmd.ExecuteScalar();
+                    return id == null ? 0 : Convert.ToInt64(id);
+                }
+            }
+        }
+
+        /// <summary>ดึงประวัติ (from/to = ช่วงวัน, result = "" คือทั้งหมด, keyword ค้นทะเบียน/แท็ก/ชื่อ)</summary>
+        public DataTable GetAccessLogs(DateTime from, DateTime to, string result = "", string keyword = "")
+        {
+            var dt = new DataTable();
+            using (var conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                string sql = @"SELECT * FROM access_logs
+                               WHERE ts >= @from AND ts <= @to";
+                if (!string.IsNullOrEmpty(result)) sql += " AND result = @res";
+                if (!string.IsNullOrEmpty(keyword))
+                    sql += " AND (plate_cam1 LIKE @kw OR plate_cam2 LIKE @kw OR plate_db LIKE @kw" +
+                           " OR rfid_tag LIKE @kw OR owner_name LIKE @kw)";
+                sql += " ORDER BY id DESC";
+
+                using (var cmd = new SQLiteCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("@from", from.ToString("yyyy-MM-dd 00:00:00"));
+                    cmd.Parameters.AddWithValue("@to", to.ToString("yyyy-MM-dd 23:59:59"));
+                    if (!string.IsNullOrEmpty(result)) cmd.Parameters.AddWithValue("@res", result);
+                    if (!string.IsNullOrEmpty(keyword)) cmd.Parameters.AddWithValue("@kw", "%" + keyword + "%");
+                    using (var da = new SQLiteDataAdapter(cmd)) da.Fill(dt);
+                }
+            }
+            return dt;
+        }
+
+        public void DeleteAccessLog(long id)
+        {
+            using (var conn = new SQLiteConnection(connectionString))
+            {
+                conn.Open();
+                using (var cmd = new SQLiteCommand("DELETE FROM access_logs WHERE id=@id", conn))
+                {
+                    cmd.Parameters.AddWithValue("@id", id);
                     cmd.ExecuteNonQuery();
                 }
             }

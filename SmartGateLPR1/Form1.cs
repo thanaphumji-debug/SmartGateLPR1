@@ -1,4 +1,5 @@
-﻿using Newtonsoft.Json;
+﻿using ClosedXML.Excel;
+using Newtonsoft.Json;
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
 using SmartGateLPR;
@@ -52,6 +53,11 @@ namespace SmartGateLPR1
         private bool[] hasPlateBox = new bool[3];
         private string[] latestPlateText = new string[] { "", "", "" };
         private DateTime[] latestBoxTime = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+        // ===== ประวัติการเข้า-ออก: เฟรมล่าสุด + ข้อมูลประกอบ =====
+        private readonly object frameLock = new object();
+        private Bitmap[] lastFrame = new Bitmap[3];     // เฟรมล่าสุดของแต่ละกล้อง (ไว้เซฟภาพประวัติ)
+        private string logMode = "RFID", logTag = "", logPlate1 = "", logPlate2 = "",
+                       logPlateDb = "", logProvince = "", logOwner = "", logPermission = "";
         private DateTime[] lastDetectTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private bool[] isDetecting = new bool[3];
         private readonly object boxLock = new object();
@@ -123,6 +129,7 @@ namespace SmartGateLPR1
             InitSideMenu();
             LoadSavedSettings();
             LoadAccessPolicy();
+            InitHistoryButton();
             ShowCameraPlaceholder(pbCamera1);
             ShowCameraPlaceholder(pbCamera2);
             timerHybridTimeout = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -353,6 +360,11 @@ namespace SmartGateLPR1
         {
             if (camId == 1) isCam1Running = false;
             else isCam2Running = false;
+            // ทิ้งเฟรมค้างของกล้องที่ตัดการเชื่อมต่อ (ประวัติจะได้ไม่เก็บภาพเก่า)
+            lock (frameLock)
+            {
+                if (lastFrame[camId] != null) { lastFrame[camId].Dispose(); lastFrame[camId] = null; }
+            }
 
             lock (hybridLock) plateSeen[camId] = false;
             var pLbl = PlateLabel(camId);
@@ -394,6 +406,12 @@ namespace SmartGateLPR1
                     if (!frame.Empty())
                     {
                         Bitmap image = BitmapConverter.ToBitmap(frame);
+                        // เก็บเฟรมล่าสุดไว้ใช้บันทึกภาพประวัติ (เก็บทีละ 1 ใบ ทิ้งใบเก่าทันที กัน RAM บวม)
+                        lock (frameLock)
+                        {
+                            if (lastFrame[camId] != null) lastFrame[camId].Dispose();
+                            lastFrame[camId] = (Bitmap)image.Clone();
+                        }
 
                         // --- 1. โชว์ภาพสดขึ้นหน้าจอ UI ทันที (ทำทุกเฟรม ภาพจะได้ไม่กระตุก) ---
                         Bitmap displayImage = (Bitmap)image.Clone();
@@ -478,34 +496,6 @@ namespace SmartGateLPR1
             {
                 MessageBox.Show("Error: " + ex.Message);
             }
-        }
-
-        // --- ปุ่มที่ 3: จำลองการเช็คสิทธิ์ (Check Access) ---
-        private void btnCheckData_Click(object sender, EventArgs e)
-        {
-            {
-                // สมมติสถานการณ์: กล้องอ่านได้ทะเบียนนี้
-                string plateRead = "1กข-9999";
-                string rfidRead = ""; // RFID ยังไม่ได้ต่อ
-
-                // ถาม Database ว่าคนนี้มีสิทธิ์ไหม?
-                string owner = db.CheckPermission(plateRead, rfidRead);
-
-                if (owner != null)
-                {
-                    // กรณีผ่าน: เปิดไม้กั้น
-                    MessageBox.Show($"✅ อนุญาตให้เข้า!\nยินดีต้อนรับ: {owner}", "Access Granted");
-                    db.SaveLog(plateRead, rfidRead, "path/to/snapshot.jpg", "ALLOWED");
-                }
-                else
-                {
-                    // กรณีไม่ผ่าน
-                    MessageBox.Show($"❌ ปฏิเสธการเข้า!\nไม่พบข้อมูลในระบบ", "Access Denied");
-                    db.SaveLog(plateRead, rfidRead, "path/to/snapshot.jpg", "DENIED");
-                }
-            }
-
-
         }
 
         // --- 4. แก้ Event ปิดโปรแกรม ให้หยุดทั้ง 2 ตัว ---
@@ -814,6 +804,8 @@ namespace SmartGateLPR1
             DataTable dt = db.GetUserByTag(tag);
             if (dt.Rows.Count == 0)
             {
+                logMode = "RFID"; logTag = tag; logPlate1 = p1; logPlate2 = p2;
+                logPlateDb = ""; logProvince = ""; logOwner = ""; logPermission = "";
                 lock (hybridLock) { gateBusy = true; pendingRfidTag = ""; }
                 DenyAccess($"ไม่พบบัตร {tag} ในระบบ");
                 return;
@@ -825,6 +817,8 @@ namespace SmartGateLPR1
             string owner = row["owner_name"]?.ToString() ?? "";
             string dbProv = row.Table.Columns.Contains("province") ? row["province"]?.ToString() ?? "" : "";
             string dbPlateShow = dbProv != "" ? dbPlate + " " + dbProv : dbPlate;   // ทะเบียน + จังหวัด สำหรับแสดงผล
+            logMode = "RFID"; logTag = tag; logPlate1 = p1; logPlate2 = p2;
+            logPlateDb = dbPlate; logProvince = dbProv; logOwner = owner; logPermission = dbPerm;
 
             bool havePlate = p1 != "" || p2 != "";
             bool bothRead = p1 != "" && p2 != "";
@@ -885,6 +879,8 @@ namespace SmartGateLPR1
         // ---- โหมด LPR อย่างเดียว (ไม่มีบัตร): ป้ายตรงฐานข้อมูล = ผ่าน ----
         private void DecideLprOnly(string p1, string p2)
         {
+            logMode = "LPR"; logTag = ""; logPlate1 = p1; logPlate2 = p2;
+            logPlateDb = ""; logProvince = ""; logOwner = ""; logPermission = "";
             // สวิตช์ 4: อ่านได้ทั้ง 2 กล้องแต่เลขคนละอัน → ปฏิเสธ (กันปลอมป้าย) ในโหมด LPR ล้วนด้วย
             bool bothRead = p1 != "" && p2 != "";
             if (requirePlatesAgree && bothRead && NormPlate(p1) != NormPlate(p2))
@@ -905,6 +901,8 @@ namespace SmartGateLPR1
                     string perm = row.Table.Columns.Contains("permission") ? row["permission"]?.ToString() ?? "" : "";
                     string dbPlate = row["plate_number"]?.ToString() ?? "";
                     string dbProv = row.Table.Columns.Contains("province") ? row["province"]?.ToString() ?? "" : "";
+                    logPlateDb = row["plate_number"]?.ToString() ?? ""; logProvince = dbProv;
+                    logOwner = owner; logPermission = perm;
                     if (dbProv != "") dbPlate = dbPlate + " " + dbProv;
                     lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; }
                     GrantAccess(owner, dbPlate, perm, $"✔ ผ่านด้วยป้ายทะเบียน (กล้อง{item.cam}) — โหมดไม่ใช้ RFID");
@@ -916,19 +914,112 @@ namespace SmartGateLPR1
             DenyAccess("⛔ ปฏิเสธ — ไม่พบข้อมูลในระบบ");
         }
 
+        // ปุ่ม "ประวัติการเข้า-ออก" ในโซนอนุญาต (สร้างด้วยโค้ด ไม่ต้องเพิ่มใน Designer)
+        private void InitHistoryButton()
+        {
+            var btn = new Button
+            {
+                Text = "📋  ประวัติการเข้า-ออก",
+                Size = new System.Drawing.Size(220, 34),
+                Location = new System.Drawing.Point(groupBox4.Width - 240, groupBox4.Height - 45),
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Right,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(235, 243, 255),
+                Font = new Font("Tahoma", 9.5f, FontStyle.Bold)
+            };
+            btn.FlatAppearance.BorderColor = Color.FromArgb(120, 160, 210);
+            btn.Click += (s, e) =>
+            {
+                using (var f = new LogViewerForm()) f.ShowDialog(this);
+            };
+            groupBox4.Controls.Add(btn);
+            btn.BringToFront();
+        }
+
+        // เซฟภาพมุมกว้าง + ภาพซูมป้าย ของกล้องที่ระบุ คืน path ทั้งสอง
+        private (string wide, string plate) SaveCamImages(int camId, string dir, string stamp)
+        {
+            string wide = "", plateImg = "";
+            Bitmap snap = null;
+            lock (frameLock)
+            {
+                if (lastFrame[camId] != null) snap = (Bitmap)lastFrame[camId].Clone();
+            }
+            if (snap == null) return (wide, plateImg);
+
+            try
+            {
+                wide = System.IO.Path.Combine(dir, $"{stamp}_cam{camId}_wide.jpg");
+                if (jpegCodec != null) snap.Save(wide, jpegCodec, jpegHiQ);
+                else snap.Save(wide, System.Drawing.Imaging.ImageFormat.Jpeg);
+
+                Rectangle box; bool has;
+                lock (boxLock) { has = hasPlateBox[camId]; box = latestPlateBox[camId]; }
+
+                if (has && box.Width > 4 && box.Height > 4)
+                {
+                    Rectangle r = Rectangle.Inflate(box, 10, 10);          // เผื่อขอบป้ายนิดหน่อย
+                    r.Intersect(new Rectangle(0, 0, snap.Width, snap.Height));
+                    if (r.Width > 4 && r.Height > 4)
+                    {
+                        using (Bitmap crop = snap.Clone(r, snap.PixelFormat))
+                        {
+                            plateImg = System.IO.Path.Combine(dir, $"{stamp}_cam{camId}_plate.jpg");
+                            if (jpegCodec != null) crop.Save(plateImg, jpegCodec, jpegHiQ);
+                            else crop.Save(plateImg, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Console.WriteLine("เซฟภาพประวัติไม่ได้: " + ex.Message); }
+            finally { snap.Dispose(); }
+
+            return (wide, plateImg);
+        }
+
+        // เขียนประวัติ 1 รายการ (saveImages = true เฉพาะตอนอนุญาตให้ผ่าน)
+        private void WriteAccessLog(string result, string reason, bool saveImages)
+        {
+            // ก๊อปข้อมูลออกมาก่อน กันถูกทับตอนทำงานเบื้องหลัง
+            DateTime now = DateTime.Now;
+            string mode = logMode, tag = logTag, c1 = logPlate1, c2 = logPlate2,
+                   pdb = logPlateDb, prov = logProvince, own = logOwner, perm = logPermission;
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    string w1 = "", w2 = "", i1 = "", i2 = "";
+                    if (saveImages)
+                    {
+                        string dir = db.GetLogImageDir(now);
+                        string stamp = now.ToString("HHmmss");
+                        var a = SaveCamImages(1, dir, stamp);
+                        var b = SaveCamImages(2, dir, stamp);
+                        w1 = a.wide; i1 = a.plate;
+                        w2 = b.wide; i2 = b.plate;
+                    }
+                    db.SaveAccessLog(now, result, reason, mode, tag, c1, c2,
+                                     pdb, prov, own, perm, w1, w2, i1, i2);
+                }
+                catch (Exception ex) { Console.WriteLine("บันทึกประวัติไม่ได้: " + ex.Message); }
+            });
+        }
+
         private void GrantAccess(string owner, string plate, string permission,
                                  string detail = "ยืนยัน 2 ชั้นผ่าน (RFID + ป้ายทะเบียน)")
         {
             lock (hybridLock) sawMismatch = false;      // ⬅️ เพิ่ม
             string who = owner + (permission != "" ? $" ({permission})" : "");
-            SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen,
-                        plate, who, detail);
+            SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen, plate, who, detail);
+            WriteAccessLog("ALLOWED", detail, true);       // ผ่าน → เก็บภาพด้วย
             this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
         }
 
         private void DenyAccess(string reason)
         {
             SetAccessUi("⛔ ไม่อนุญาตให้เข้า", Color.Red, Color.Red, "-", "-", reason);
+            WriteAccessLog("DENIED", reason, false);       // ปฏิเสธ → บันทึกอย่างเดียว ไม่เก็บภาพ
             this.BeginInvoke(new Action(() => { timerGate.Interval = 4000; timerGate.Start(); }));
         }
 
@@ -949,8 +1040,13 @@ namespace SmartGateLPR1
             if (dbProv != "") dbPlate = dbPlate + " " + dbProv;
             string who = owner + (perm != "" ? $" ({perm})" : "");
 
+            logMode = "RFID"; logTag = tag; logPlate1 = ""; logPlate2 = "";
+            logPlateDb = dbPlate; logProvince = dbProv; logOwner = owner; logPermission = perm;
+            if (dbProv != "") dbPlate = dbPlate + " " + dbProv;
+
             SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen,
                         dbPlate, who, "⚠️ ตรวจพบแท็ก RFID แต่ตรวจจับไม่พบป้ายทะเบียน");
+            WriteAccessLog("ALLOWED", "⚠️ ตรวจพบแท็ก RFID แต่ตรวจจับไม่พบป้ายทะเบียน", true);
             this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
         }
 
@@ -960,6 +1056,7 @@ namespace SmartGateLPR1
             string tagMismatchDeny = null;
             bool plateNoTagDeny = false;
             bool noPlateDeny = false;
+            string noTagP1 = "", noTagP2 = "";   // ทะเบียนที่อ่านได้ตอนไม่มีแท็ก (ไว้บันทึกประวัติ)
 
             lock (hybridLock)
             {
@@ -1002,6 +1099,7 @@ namespace SmartGateLPR1
                     {
                         plateNoTagDeny = true;
                         gateBusy = true;
+                        noTagP1 = pendingPlateCam[1]; noTagP2 = pendingPlateCam[2];
                         pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
                         plateSeenNoTagAt = DateTime.MinValue;
                     }
@@ -1019,7 +1117,12 @@ namespace SmartGateLPR1
             else if (tagMismatchDeny != null)
                 DenyAccess("⛔ ป้ายทะเบียนไม่ตรงกับบัตร (ตรวจสอบซ้ำแล้ว)");
             else if (plateNoTagDeny)
+            {
+                // เคสนี้ไม่มีแท็ก → ล้าง context เก่า กันบันทึกแท็กของคันก่อนหน้าผิด ๆ
+                logMode = "RFID"; logTag = ""; logPlate1 = noTagP1; logPlate2 = noTagP2;
+                logPlateDb = ""; logProvince = ""; logOwner = ""; logPermission = "";
                 DenyAccess("⛔ ตรวจพบป้ายทะเบียน แต่ไม่พบแท็ก RFID");
+            }
             else if (noPlateDeny)                                              // ⬅️ เพิ่ม
                 DenyAccess("⛔ ไม่พบป้ายทะเบียน ");
         }
@@ -1051,7 +1154,7 @@ namespace SmartGateLPR1
 
             try
             {
-                
+
                 {
                     var client = httpPredict;
 
@@ -1170,7 +1273,7 @@ namespace SmartGateLPR1
             isDetecting[camId] = true;
             try
             {
-                
+
                 {
                     var client = httpDetect;
                     using (var ms = new MemoryStream())
@@ -1315,6 +1418,11 @@ namespace SmartGateLPR1
         }
 
         private void btnDisconnectRFID_Load(object sender, EventArgs e)
+        {
+
+        }
+
+        private void groupBox4_Enter(object sender, EventArgs e)
         {
 
         }

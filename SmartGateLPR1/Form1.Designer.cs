@@ -61,6 +61,7 @@
             lblLicensePlate1 = new Label();
             lblLprStatus1 = new Label();
             groupBox4 = new GroupBox();
+            button1 = new Button();
             ((System.ComponentModel.ISupportInitialize)pbCamera1).BeginInit();
             ((System.ComponentModel.ISupportInitialize)pbCamera2).BeginInit();
             groupBox1.SuspendLayout();
@@ -410,6 +411,7 @@
             // groupBox4
             // 
             groupBox4.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
+            groupBox4.Controls.Add(button1);
             groupBox4.Controls.Add(txtSimulateRFID);
             groupBox4.Controls.Add(lblShowPlate);
             groupBox4.Controls.Add(lblShowName);
@@ -424,6 +426,16 @@
             groupBox4.TabIndex = 27;
             groupBox4.TabStop = false;
             groupBox4.Text = "การอนุญาตเข้า-ออก";
+            groupBox4.Enter += groupBox4_Enter;
+            // 
+            // button1
+            // 
+            button1.Location = new Point(321, 100);
+            button1.Name = "button1";
+            button1.Size = new Size(94, 29);
+            button1.TabIndex = 25;
+            button1.Text = "button1";
+            button1.UseVisualStyleBackColor = true;
             // 
             // btnDisconnectRFID
             // 
@@ -505,5 +517,6 @@
         private GroupBox groupBox5;
         private Label lblLicensePlate1;
         private Label txtRFIDInput2;
+        private Button button1;
     }
 }
