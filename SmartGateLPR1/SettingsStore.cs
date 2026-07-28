@@ -23,8 +23,8 @@ namespace SmartGateLPR1
         public string DbUser { get; set; } = "";
         public string DbPassword { get; set; } = "";
         public string CloudType { get; set; } = "MySQL";      // MySQL / PostgreSQL / Nextcloud / S3
-        public string CloudRemotePath { get; set; } = "";     // โฟลเดอร์/Bucket ปลายทาง
         public bool CloudUseSsl { get; set; } = true;
+        public string LogImageDir { get; set; } = "";        // โฟลเดอร์เก็บภาพประวัติ (ว่าง = ข้างไฟล์ฐานข้อมูล)
         // --- เงื่อนไขการอนุญาตเข้า-ออก ---
         public bool RequireRfid { get; set; } = true;
         public bool AllowNoPlate { get; set; } = true;

@@ -130,6 +130,13 @@ namespace SmartGateLPR1
             LoadSavedSettings();
             LoadAccessPolicy();
             InitHistoryButton();
+            if (!string.IsNullOrEmpty(DatabaseHelper.LastSchemaError))
+            {
+                this.BeginInvoke(new Action(() =>
+                    MessageBox.Show("ใช้ฐานข้อมูลที่ตั้งไว้ไม่ได้:\n\n" + DatabaseHelper.LastSchemaError +
+                                    "\n\nเปิดเมนู ☰ → ตั้งค่าฐานข้อมูล เพื่อแก้ไข",
+                                    "ฐานข้อมูล", MessageBoxButtons.OK, MessageBoxIcon.Warning)));
+            }
             ShowCameraPlaceholder(pbCamera1);
             ShowCameraPlaceholder(pbCamera2);
             timerHybridTimeout = new System.Windows.Forms.Timer { Interval = 1000 };

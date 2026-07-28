@@ -5,149 +5,252 @@ using System.Windows.Forms;
 
 namespace SmartGateLPR1
 {
+    /// <summary>ตั้งค่าที่เก็บข้อมูล — ในเครื่อง (SQLite) หรือบน server (MySQL/MariaDB)</summary>
     public class StorageSettingsForm : Form
     {
-        private RadioButton rbLocal = new RadioButton { Text = "เก็บในคอมพิวเตอร์ (SQLite)", Left = 20, Top = 15, Width = 260, Checked = true };
-        private RadioButton rbCloud = new RadioButton { Text = "เก็บบน Cloud ของตัวเอง", Left = 20, Top = 40, Width = 260 };
-        private GroupBox grpLocal = new GroupBox { Text = "ที่เก็บในเครื่อง", Left = 20, Top = 72, Width = 470, Height = 95 };
-        private GroupBox grpCloud = new GroupBox { Text = "การเชื่อมต่อ Cloud", Left = 20, Top = 177, Width = 470, Height = 315 };
+        private RadioButton rbLocal = new RadioButton
+        { Text = "เก็บในคอมพิวเตอร์เครื่องนี้  (SQLite)", Left = 22, Top = 44, Width = 300, Checked = true };
+        private RadioButton rbCloud = new RadioButton
+        { Text = "เก็บบนเซิร์ฟเวอร์ / Cloud  (MySQL หรือ MariaDB)", Left = 22, Top = 68, Width = 340 };
 
-        private TextBox txtPath = new TextBox();
-        private ComboBox cboType = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-        private Label[] lbl = new Label[6];
-        private TextBox[] box = new TextBox[6];
-        private Button btnBrowseRemote = new Button { Text = "เลือก...", Width = 70 };
-        private CheckBox chkSsl = new CheckBox { Text = "ใช้ SSL/TLS (เข้ารหัสการเชื่อมต่อ)", Width = 250 };
+        private GroupBox grpLocal = new GroupBox
+        { Text = "ฐานข้อมูลในเครื่อง", Left = 20, Top = 96, Width = 500, Height = 86 };
+        private GroupBox grpCloud = new GroupBox
+        { Text = "การเชื่อมต่อเซิร์ฟเวอร์", Left = 20, Top = 188, Width = 500, Height = 224 };
+        private GroupBox grpImg = new GroupBox
+        { Text = "โฟลเดอร์เก็บภาพประวัติ (ใช้ได้ทั้งสองแบบ)", Left = 20, Top = 418, Width = 500, Height = 84 };
 
-        private static readonly string[] CloudTypes = {
-            "MySQL / MariaDB  (ฐานข้อมูลบน server)",
-            "PostgreSQL  (ฐานข้อมูลบน server)",
-            "Nextcloud / WebDAV  (เก็บไฟล์)",
-            "S3 / MinIO  (เก็บไฟล์แบบ Bucket)"
-        };
+        private TextBox txtDbPath = new TextBox { Left = 15, Top = 48, Width = 375 };
+        private TextBox txtImgDir = new TextBox { Left = 15, Top = 46, Width = 375 };
+
+        private ComboBox cboType = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 110, Top = 26, Width = 200 };
+        private TextBox txtHost = new TextBox { Left = 110, Top = 58, Width = 220 };
+        private TextBox txtPort = new TextBox { Left = 400, Top = 58, Width = 70, Text = "3306" };
+        private TextBox txtDbName = new TextBox { Left = 110, Top = 90, Width = 220 };
+        private TextBox txtUser = new TextBox { Left = 110, Top = 122, Width = 220 };
+        private TextBox txtPass = new TextBox { Left = 110, Top = 154, Width = 220, UseSystemPasswordChar = true };
+        private CheckBox chkSsl = new CheckBox
+        { Text = "เข้ารหัสการเชื่อมต่อด้วย SSL/TLS (แนะนำเมื่อออกอินเทอร์เน็ต)", Left = 15, Top = 188, Width = 420, Checked = true };
+        private CheckBox chkShowPass = new CheckBox { Text = "แสดงรหัส", Left = 345, Top = 156, Width = 90 };
+
+        private Label lblNow = new Label
+        { Left = 22, Top = 14, Width = 500, Height = 22, ForeColor = Color.FromArgb(30, 90, 60) };
 
         public StorageSettingsForm()
         {
             Text = "ตั้งค่าที่เก็บข้อมูล";
-            ClientSize = new Size(510, 550);
+            ClientSize = new Size(542, 596);
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
 
-            // --- กลุ่ม Local ---
-            grpLocal.Controls.Add(new Label { Text = "ไฟล์ฐานข้อมูล (.db):", Left = 15, Top = 25, Width = 140 });
-            txtPath.SetBounds(15, 50, 330, 24);
-            var btnBrowse = new Button { Text = "เลือกโฟลเดอร์...", Left = 355, Top = 48, Width = 100 };
-            btnBrowse.Click += (s, e) =>
+            lblNow.Font = new Font("Tahoma", 8.5f, FontStyle.Bold);
+
+            // ---------- ในเครื่อง ----------
+            grpLocal.Controls.Add(new Label
+            { Text = "ไฟล์ฐานข้อมูล (.db) — เว้นว่างไว้ = เก็บข้างตัวโปรแกรม", Left = 15, Top = 24, Width = 460, ForeColor = Color.Gray });
+            var btnBrowseDb = new Button { Text = "เลือก...", Left = 398, Top = 46, Width = 78, Height = 25 };
+            btnBrowseDb.Click += (s, e) =>
             {
-                using (var fb = new FolderBrowserDialog())
-                    if (fb.ShowDialog() == DialogResult.OK)
-                        txtPath.Text = Path.Combine(fb.SelectedPath, "smartgate.db");
+                using (var sfd = new SaveFileDialog
+                {
+                    Title = "เลือกที่เก็บไฟล์ฐานข้อมูล",
+                    Filter = "ไฟล์ฐานข้อมูล SQLite (*.db)|*.db",
+                    FileName = string.IsNullOrWhiteSpace(txtDbPath.Text) ? "smartgate.db" : Path.GetFileName(txtDbPath.Text),
+                    OverwritePrompt = false
+                })
+                { if (sfd.ShowDialog(this) == DialogResult.OK) txtDbPath.Text = sfd.FileName; }
             };
-            grpLocal.Controls.Add(txtPath);
-            grpLocal.Controls.Add(btnBrowse);
+            grpLocal.Controls.Add(txtDbPath);
+            grpLocal.Controls.Add(btnBrowseDb);
 
-            // --- กลุ่ม Cloud ---
-            grpCloud.Controls.Add(new Label { Text = "รูปแบบ:", Left = 15, Top = 30, Width = 60 });
-            cboType.SetBounds(80, 27, 375, 24);
-            cboType.Items.AddRange(CloudTypes);
-            cboType.SelectedIndexChanged += (s, e) => ApplyType();
-            grpCloud.Controls.Add(cboType);
+            // ---------- เซิร์ฟเวอร์ ----------
+            cboType.Items.AddRange(new object[] { "MySQL", "MariaDB" });
+            cboType.SelectedIndex = 0;
+            AddLbl(grpCloud, "ชนิดฐานข้อมูล:", 15, 30);
+            AddLbl(grpCloud, "Host / IP:", 15, 62);
+            AddLbl(grpCloud, "Port:", 350, 62, 45);
+            AddLbl(grpCloud, "ชื่อฐานข้อมูล:", 15, 94);
+            AddLbl(grpCloud, "Username:", 15, 126);
+            AddLbl(grpCloud, "Password:", 15, 158);
 
-            for (int i = 0; i < 6; i++)
+            chkShowPass.CheckedChanged += (s, e) => txtPass.UseSystemPasswordChar = !chkShowPass.Checked;
+
+            grpCloud.Controls.AddRange(new Control[]
+            { cboType, txtHost, txtPort, txtDbName, txtUser, txtPass, chkShowPass, chkSsl });
+
+            // ---------- โฟลเดอร์ภาพ ----------
+            grpImg.Controls.Add(new Label
             {
-                lbl[i] = new Label { Left = 15, Top = 68 + i * 32, Width = 115 };
-                box[i] = new TextBox();
-                box[i].SetBounds(135, 65 + i * 32, 320, 24);
-                grpCloud.Controls.Add(lbl[i]);
-                grpCloud.Controls.Add(box[i]);
-            }
-            box[4].UseSystemPasswordChar = true;
+                Text = "เว้นว่าง = เก็บข้างไฟล์ฐานข้อมูล  |  ใส่ path เครือข่ายได้ เช่น \\\\server\\photos",
+                Left = 15,
+                Top = 22,
+                Width = 470,
+                ForeColor = Color.Gray
+            });
+            var btnBrowseImg = new Button { Text = "เลือก...", Left = 398, Top = 44, Width = 78, Height = 25 };
+            btnBrowseImg.Click += (s, e) =>
+            {
+                using (var fbd = new FolderBrowserDialog { Description = "เลือกโฟลเดอร์เก็บภาพประวัติ" })
+                { if (fbd.ShowDialog(this) == DialogResult.OK) txtImgDir.Text = fbd.SelectedPath; }
+            };
+            grpImg.Controls.Add(txtImgDir);
+            grpImg.Controls.Add(btnBrowseImg);
 
-            // แถวโฟลเดอร์ปลายทาง มีปุ่ม "เลือก..." ต่อท้าย
-            box[5].Width = 240;
-            btnBrowseRemote.Location = new Point(385, 65 + 5 * 32);
-            btnBrowseRemote.Click += (s, e) => MessageBox.Show(
-                "เมื่อตัวเชื่อมต่อจริงเสร็จ ปุ่มนี้จะดึงรายชื่อโฟลเดอร์จาก server มาให้คลิกเลือกเป็นลำดับชั้น\nตอนนี้พิมพ์ path เองไปก่อน เช่น /SmartGate/plates",
-                "รอพัฒนา", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            grpCloud.Controls.Add(btnBrowseRemote);
+            // ---------- ปุ่มล่าง ----------
+            var btnTest = new Button
+            {
+                Text = "🔌  ทดสอบการเชื่อมต่อ",
+                Left = 20,
+                Top = 514,
+                Width = 170,
+                Height = 32,
+                BackColor = Color.FromArgb(232, 240, 254)
+            };
+            btnTest.Click += BtnTest_Click;
 
-            chkSsl.Location = new Point(135, 68 + 6 * 32);
-            grpCloud.Controls.Add(chkSsl);
+            var btnSave = new Button { Text = "บันทึก", Left = 340, Top = 514, Width = 88, Height = 32 };
+            btnSave.Click += BtnSave_Click;
+            var btnCancel = new Button { Text = "ยกเลิก", Left = 434, Top = 514, Width = 88, Height = 32 };
+            btnCancel.Click += (s, e) => Close();
 
-            EventHandler sync = (s, e) => { grpLocal.Enabled = rbLocal.Checked; grpCloud.Enabled = rbCloud.Checked; };
+            var lblHint = new Label
+            {
+                Text = "ข้อมูลจะไม่ย้ายตามเมื่อสลับที่เก็บ — แต่ละที่เก็บมีข้อมูลของตัวเอง",
+                Left = 22,
+                Top = 556,
+                Width = 500,
+                ForeColor = Color.FromArgb(150, 90, 0)
+            };
+
+            EventHandler sync = (s, e) =>
+            {
+                grpLocal.Enabled = rbLocal.Checked;
+                grpCloud.Enabled = rbCloud.Checked;
+            };
             rbLocal.CheckedChanged += sync;
             rbCloud.CheckedChanged += sync;
 
-            var btnSave = new Button { Text = "บันทึก", Left = 305, Top = 508, Width = 85 };
-            btnSave.Click += BtnSave_Click;
-            var btnCancel = new Button { Text = "ยกเลิก", Left = 400, Top = 508, Width = 85 };
-            btnCancel.Click += (s, e) => Close();
+            Controls.AddRange(new Control[]
+            { lblNow, rbLocal, rbCloud, grpLocal, grpCloud, grpImg, btnTest, btnSave, btnCancel, lblHint });
 
-            Controls.AddRange(new Control[] { rbLocal, rbCloud, grpLocal, grpCloud, btnSave, btnCancel });
-
-            // --- โหลดค่าเดิม ---
-            var st = SettingsStore.Load();
-            rbCloud.Checked = st.StorageMode == "cloud";
-            rbLocal.Checked = !rbCloud.Checked;
-            txtPath.Text = st.DbLocalPath;
-            int idx = Array.FindIndex(CloudTypes, t => t.StartsWith(st.CloudType));
-            cboType.SelectedIndex = idx >= 0 ? idx : 0;
-            box[0].Text = st.DbHost;
-            box[1].Text = st.DbPort > 0 ? st.DbPort.ToString() : "";
-            box[2].Text = st.DbName;
-            box[3].Text = st.DbUser;
-            box[4].Text = st.DbPassword;
-            box[5].Text = st.CloudRemotePath;
-            chkSsl.Checked = st.CloudUseSsl;
+            LoadCurrent();
             sync(null, null);
-            ApplyType();
         }
 
-        // เปลี่ยนป้ายชื่อ/ช่อง ตามรูปแบบ cloud ที่เลือก
-        private void ApplyType()
+        private void AddLbl(Control parent, string text, int left, int top, int width = 95)
         {
-            int t = cboType.SelectedIndex;
-            bool isDb = (t == 0 || t == 1);
+            parent.Controls.Add(new Label { Text = text, Left = left, Top = top + 3, Width = width });
+        }
 
-            lbl[0].Text = isDb ? "Host / IP:" : (t == 2 ? "Server URL:" : "Endpoint URL:");
-            lbl[1].Text = "Port:";
-            lbl[2].Text = isDb ? "ชื่อฐานข้อมูล:" : "Bucket:";
-            lbl[3].Text = (t == 3) ? "Access Key:" : "Username:";
-            lbl[4].Text = (t == 3) ? "Secret Key:" : (t == 2 ? "App Password:" : "Password:");
-            lbl[5].Text = "โฟลเดอร์ปลายทาง:";
+        private void LoadCurrent()
+        {
+            var st = SettingsStore.Load();
 
-            // ซ่อนช่องที่ไม่เกี่ยวกับรูปแบบนั้น
-            lbl[2].Visible = box[2].Visible = (isDb || t == 3);                   // db name / bucket
-            lbl[5].Visible = box[5].Visible = btnBrowseRemote.Visible = !isDb;    // โฟลเดอร์ มีเฉพาะแบบเก็บไฟล์
+            rbCloud.Checked = st.StorageMode == "cloud";
+            rbLocal.Checked = !rbCloud.Checked;
 
-            // เติม port มาตรฐานให้ ถ้าช่องยังว่าง
-            if (string.IsNullOrWhiteSpace(box[1].Text))
-                box[1].Text = (t == 0) ? "3306" : (t == 1) ? "5432" : (t == 2) ? "443" : "9000";
+            txtDbPath.Text = st.DbLocalPath;
+            txtImgDir.Text = st.LogImageDir;
+
+            cboType.SelectedIndex = st.CloudType == "MariaDB" ? 1 : 0;
+            txtHost.Text = st.DbHost;
+            txtPort.Text = (st.DbPort > 0 ? st.DbPort : 3306).ToString();
+            txtDbName.Text = st.DbName;
+            txtUser.Text = st.DbUser;
+            txtPass.Text = st.DbPassword;
+            chkSsl.Checked = st.CloudUseSsl;
+
+            lblNow.Text = "ตอนนี้ใช้อยู่:  " + (string.IsNullOrEmpty(Db.Describe) ? "(ยังไม่ได้ตั้งค่า)" : Db.Describe);
+        }
+
+        /// <summary>อ่านค่าจากหน้าจอมาเป็น AppSettings (ยังไม่บันทึกลงไฟล์)</summary>
+        private AppSettings ReadForm()
+        {
+            var st = SettingsStore.Load();
+
+            st.StorageMode = rbCloud.Checked ? "cloud" : "local";
+            st.DbLocalPath = txtDbPath.Text.Trim();
+            st.LogImageDir = txtImgDir.Text.Trim();
+
+            st.CloudType = cboType.SelectedIndex == 1 ? "MariaDB" : "MySQL";
+            st.DbHost = txtHost.Text.Trim();
+            st.DbName = txtDbName.Text.Trim();
+            st.DbUser = txtUser.Text.Trim();
+            st.DbPassword = txtPass.Text;
+            st.CloudUseSsl = chkSsl.Checked;
+
+            int port;
+            st.DbPort = int.TryParse(txtPort.Text.Trim(), out port) && port > 0 ? port : 3306;
+
+            return st;
+        }
+
+        private void BtnTest_Click(object sender, EventArgs e)
+        {
+            Cursor = Cursors.WaitCursor;
+            string result = Db.TestConnection(ReadForm());
+            Cursor = Cursors.Default;
+
+            bool ok = result.StartsWith("OK|");
+            MessageBox.Show(result.Substring(result.IndexOf('|') + 1),
+                            ok ? "เชื่อมต่อได้" : "เชื่อมต่อไม่ได้",
+                            MessageBoxButtons.OK,
+                            ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
 
         private void BtnSave_Click(object sender, EventArgs e)
         {
-            var st = SettingsStore.Load();
-            st.StorageMode = rbCloud.Checked ? "cloud" : "local";
-            st.DbLocalPath = txtPath.Text.Trim();
-            st.CloudType = cboType.SelectedIndex == 0 ? "MySQL"
-                         : cboType.SelectedIndex == 1 ? "PostgreSQL"
-                         : cboType.SelectedIndex == 2 ? "Nextcloud" : "S3";
-            st.DbHost = box[0].Text.Trim();
-            st.DbPort = int.TryParse(box[1].Text.Trim(), out int p) ? p : 0;
-            st.DbName = box[2].Text.Trim();
-            st.DbUser = box[3].Text.Trim();
-            st.DbPassword = box[4].Text;
-            st.CloudRemotePath = box[5].Text.Trim();
-            st.CloudUseSsl = chkSsl.Checked;
-            SettingsStore.Save(st);
+            var st = ReadForm();
 
-            MessageBox.Show(rbCloud.Checked
-                ? "บันทึกแล้ว (ตัวเชื่อมต่อ Cloud อยู่ระหว่างพัฒนา โปรแกรมยังใช้ฐานข้อมูลในเครื่องไปก่อน)"
-                : "บันทึกแล้ว — ปิดและเปิดโปรแกรมใหม่เพื่อให้ที่เก็บใหม่มีผล",
-                "ตั้งค่าที่เก็บข้อมูล", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            Close();
+            if (st.StorageMode == "cloud")
+            {
+                if (st.DbHost == "" || st.DbName == "" || st.DbUser == "")
+                {
+                    MessageBox.Show("โหมดเซิร์ฟเวอร์ต้องกรอก Host, ชื่อฐานข้อมูล และ Username ให้ครบ",
+                                    "ข้อมูลไม่ครบ", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // กันบันทึกค่าที่ต่อไม่ได้ทิ้งไว้จนโปรแกรมเปิดมาแล้วใช้งานไม่ได้
+                string test = Db.TestConnection(st);
+                if (!test.StartsWith("OK|"))
+                {
+                    var ans = MessageBox.Show(
+                        test.Substring(test.IndexOf('|') + 1) +
+                        "\n\nยังต้องการบันทึกค่านี้ไว้ไหม?\n(ถ้าบันทึก โปรแกรมจะใช้ฐานข้อมูลในเครื่องไปก่อนจนกว่าจะต่อได้)",
+                        "ต่อเซิร์ฟเวอร์ไม่ได้", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                    if (ans != DialogResult.Yes) return;
+                }
+            }
+
+            try
+            {
+                SettingsStore.Save(st);
+                Db.Configure(st);
+                DatabaseHelper.ResetSchema();
+
+                new DatabaseHelper();                  // สร้าง/ตรวจตารางตามที่เก็บใหม่
+                if (!string.IsNullOrEmpty(DatabaseHelper.LastSchemaError))
+                {
+                    MessageBox.Show("บันทึกค่าแล้ว แต่สร้างตารางไม่สำเร็จ:\n\n" + DatabaseHelper.LastSchemaError,
+                                    "เตือน", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    MessageBox.Show("บันทึกแล้ว — ตอนนี้ระบบใช้:\n\n" + Db.Describe +
+                                    "\n\nโฟลเดอร์ภาพ: " + Db.ImageBaseDir,
+                                    "ตั้งค่าที่เก็บข้อมูล", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("บันทึกไม่สำเร็จ: " + Db.Explain(ex), "ผิดพลาด",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
     }
 }
