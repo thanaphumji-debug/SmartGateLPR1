@@ -223,14 +223,26 @@ namespace SmartGateLPR1
 
         // ================= ประวัติการผ่านเข้า-ออก =================
 
-        /// <summary>โฟลเดอร์เก็บภาพประวัติ แยกตามวัน (ตั้งที่อยู่ได้ในหน้าตั้งค่าที่เก็บข้อมูล)</summary>
+        /// <summary>โฟลเดอร์เก็บภาพประวัติ แยกตามวัน (ถ้าโฟลเดอร์ที่ตั้งไว้ใช้ไม่ได้ จะถอยไปเก็บข้างตัวโปรแกรม)</summary>
         public string GetLogImageDir(DateTime when)
         {
+            string day = when.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
             string baseDir = Db.ImageBaseDir;
-            if (string.IsNullOrEmpty(baseDir)) baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            string dir = Path.Combine(baseDir, "logs", when.ToString("yyyy-MM-dd"));
-            Directory.CreateDirectory(dir);
-            return dir;
+
+            if (!string.IsNullOrWhiteSpace(baseDir))
+            {
+                try
+                {
+                    string dir = Path.Combine(baseDir, "logs", day);
+                    Directory.CreateDirectory(dir);
+                    return dir;
+                }
+                catch { /* path ที่ตั้งไว้ใช้ไม่ได้ → ใช้ค่าสำรองด้านล่าง */ }
+            }
+
+            string fallback = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", day);
+            Directory.CreateDirectory(fallback);
+            return fallback;
         }
 
         public long SaveAccessLog(DateTime ts, string result, string reason, string mode,
@@ -244,7 +256,7 @@ namespace SmartGateLPR1
                     VALUES (@ts,@res,@rea,@mode,@tag,@p1,@p2,@pdb,@prov,@own,@perm,@w1,@w2,@c1,@c2)",
                 cmd =>
                 {
-                    Db.P(cmd, "@ts", ts.ToString("yyyy-MM-dd HH:mm:ss"));
+                    Db.P(cmd, "@ts", ts.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture));
                     Db.P(cmd, "@res", result ?? "");
                     Db.P(cmd, "@rea", reason ?? "");
                     Db.P(cmd, "@mode", mode ?? "");
@@ -273,8 +285,8 @@ namespace SmartGateLPR1
 
             return Db.Query(sql, cmd =>
             {
-                Db.P(cmd, "@from", from.ToString("yyyy-MM-dd 00:00:00"));
-                Db.P(cmd, "@to", to.ToString("yyyy-MM-dd 23:59:59"));
+                Db.P(cmd, "@from", from.ToString("yyyy-MM-dd 00:00:00", System.Globalization.CultureInfo.InvariantCulture));
+                Db.P(cmd, "@to", to.ToString("yyyy-MM-dd 23:59:59", System.Globalization.CultureInfo.InvariantCulture));
                 if (!string.IsNullOrEmpty(result)) Db.P(cmd, "@res", result);
                 if (!string.IsNullOrEmpty(keyword)) Db.P(cmd, "@kw", "%" + keyword + "%");
             });

@@ -984,7 +984,6 @@ namespace SmartGateLPR1
             return (wide, plateImg);
         }
 
-        // เขียนประวัติ 1 รายการ (saveImages = true เฉพาะตอนอนุญาตให้ผ่าน)
         private void WriteAccessLog(string result, string reason, bool saveImages)
         {
             // ก๊อปข้อมูลออกมาก่อน กันถูกทับตอนทำงานเบื้องหลัง
@@ -994,18 +993,26 @@ namespace SmartGateLPR1
 
             System.Threading.Tasks.Task.Run(() =>
             {
-                try
+                string w1 = "", w2 = "", i1 = "", i2 = "";
+
+                // เซฟภาพแยก try ของตัวเอง — ถ้าโฟลเดอร์ภาพมีปัญหา ต้องยังบันทึกประวัติลงฐานข้อมูลได้
+                if (saveImages)
                 {
-                    string w1 = "", w2 = "", i1 = "", i2 = "";
-                    if (saveImages)
+                    try
                     {
                         string dir = db.GetLogImageDir(now);
-                        string stamp = now.ToString("HHmmss");
+                        string stamp = now.ToString("HHmmss", System.Globalization.CultureInfo.InvariantCulture);
                         var a = SaveCamImages(1, dir, stamp);
                         var b = SaveCamImages(2, dir, stamp);
                         w1 = a.wide; i1 = a.plate;
                         w2 = b.wide; i2 = b.plate;
                     }
+                    catch (Exception ex) { Console.WriteLine("เซฟภาพประวัติไม่ได้: " + ex.Message); }
+                }
+
+                // บันทึกฐานข้อมูลเสมอ ไม่ว่าภาพจะเซฟสำเร็จหรือไม่
+                try
+                {
                     db.SaveAccessLog(now, result, reason, mode, tag, c1, c2,
                                      pdb, prov, own, perm, w1, w2, i1, i2);
                 }
@@ -1430,6 +1437,11 @@ namespace SmartGateLPR1
         }
 
         private void groupBox4_Enter(object sender, EventArgs e)
+        {
+
+        }
+
+        private void groupBox2_Enter_1(object sender, EventArgs e)
         {
 
         }
