@@ -58,6 +58,20 @@ namespace SmartGateLPR1
         private Bitmap[] lastFrame = new Bitmap[3];     // เฟรมล่าสุดของแต่ละกล้อง (ไว้เซฟภาพประวัติ)
         private string logMode = "RFID", logTag = "", logPlate1 = "", logPlate2 = "",
                        logPlateDb = "", logProvince = "", logOwner = "", logPermission = "";
+        // ===== สลับกันอ่านทีละกล้อง + ค้างผลที่อ่านได้แล้ว =====
+        private readonly object turnLock = new object();
+        private int lprOwner = 0;                       // กล้องที่กำลังถือสิทธิ์อ่าน (0 = ว่าง)
+        private DateTime lprOwnerSince = DateTime.MinValue;
+        private int lprOwnerMaxSec = 12;                // ถือนานเกินนี้ให้อีกตัวแย่งได้ กันค้าง
+        private bool[] plateLocked = new bool[3];       // อ่านเลขได้แล้ว ค้างไว้ ไม่อ่านซ้ำ
+        private string[] lastReadPlate = new string[] { "", "", "" };
+        private int[] confirmCount = new int[3];
+        private int readsToConfirm = 2;                 // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะค้าง
+
+        // กันแท็กเดิมวนกระตุ้นซ้ำหลังตัดสินไปแล้ว
+        private string lastDecidedTag = "";
+        private DateTime lastDecidedAt = DateTime.MinValue;
+        private int sameTagCooldownSec = 10;
         private DateTime[] lastDetectTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private bool[] isDetecting = new bool[3];
         private readonly object boxLock = new object();
@@ -430,8 +444,14 @@ namespace SmartGateLPR1
                         }));
 
                         // --- 1.5 อัปเดตกรอบแดงให้ตามป้าย: เรียก /detect ทุก ~detectIntervalMs ---
+                        int myInterval = detectIntervalMs;
+                        lock (turnLock)
+                        {
+                            // อีกกล้องกำลังอ่านเลขอยู่ → กล้องนี้ลดความถี่ลง คืน GPU ให้ตัวที่กำลังทำงาน
+                            if (lprOwner != 0 && lprOwner != camId) myInterval = detectIntervalMs * 3;
+                        }
                         if (!isDetecting[camId] &&
-                            (DateTime.Now - lastDetectTimes[camId]).TotalMilliseconds >= detectIntervalMs)
+                            (DateTime.Now - lastDetectTimes[camId]).TotalMilliseconds >= myInterval)
                         {
                             lastDetectTimes[camId] = DateTime.Now;
                             Bitmap detectFrame = new Bitmap(image);
@@ -729,11 +749,16 @@ namespace SmartGateLPR1
         public void OnRfidScanned(string tagId)
         {
             if (string.IsNullOrWhiteSpace(tagId)) return;
+            string tag = tagId.Trim();
+
             lock (hybridLock)
             {
-                pendingRfidTag = tagId.Trim();
+                // แท็กเดิมที่ค้างอยู่ → ไม่รีเซ็ตเวลา ไม่งั้นตัวจับเวลาไม่มีวันครบ
+                if (tag == pendingRfidTag) return;
+
+                pendingRfidTag = tag;
                 pendingRfidTime = DateTime.Now;
-                plateSeenNoTagAt = DateTime.MinValue;   // ⬅️ เพิ่ม: แท็กมาแล้ว ยกเลิกนับถอยหลังปฏิเสธ
+                plateSeenNoTagAt = DateTime.MinValue;
             }
             this.BeginInvoke(new Action(() =>
             {
@@ -1154,11 +1179,66 @@ namespace SmartGateLPR1
         // 💡 1. เพิ่มตัวแปรเช็คสถานะ AI ไว้ (สำคัญมาก ป้องกัน RAM ล้น)
         private bool isAIProcessing = false;
 
+        // ขอสิทธิ์อ่านเลขทะเบียน — ให้ทีละกล้องเท่านั้น ใครเจอป้ายก่อนได้ก่อน
+        private bool TryTakeLprTurn(int camId)
+        {
+            lock (turnLock)
+            {
+                if (plateLocked[camId]) return false;            // กล้องนี้อ่านได้แล้ว ไม่ต้องอ่านซ้ำ
+                if (lprOwner == camId) return true;              // ถืออยู่แล้ว
+                if (lprOwner == 0)
+                {
+                    lprOwner = camId; lprOwnerSince = DateTime.Now; return true;
+                }
+                // อีกกล้องถืออยู่ ถ้าถือนานผิดปกติให้แย่งได้ กันระบบค้าง
+                if ((DateTime.Now - lprOwnerSince).TotalSeconds > lprOwnerMaxSec)
+                {
+                    lprOwner = camId; lprOwnerSince = DateTime.Now; return true;
+                }
+                return false;
+            }
+        }
+
+        // คืนสิทธิ์ — ถ้าอ่านได้เลขเดิมซ้ำครบตามกำหนด ให้ค้างผลไว้เลย
+        private void ReleaseLprTurn(int camId, string plateRead)
+        {
+            lock (turnLock)
+            {
+                if (!string.IsNullOrWhiteSpace(plateRead) && plateRead.Length >= 4)
+                {
+                    if (plateRead == lastReadPlate[camId]) confirmCount[camId]++;
+                    else { lastReadPlate[camId] = plateRead; confirmCount[camId] = 1; }
+
+                    if (confirmCount[camId] >= readsToConfirm) plateLocked[camId] = true;
+                }
+                if (lprOwner == camId) lprOwner = 0;             // ปล่อยให้อีกกล้องทำงานต่อ
+            }
+        }
+
+        // เริ่มนับใหม่ทั้งหมด (รถคันใหม่เข้ามา หรือตัดสินเสร็จแล้ว)
+        private void ResetLprTurn()
+        {
+            lock (turnLock)
+            {
+                lprOwner = 0;
+                plateLocked[1] = plateLocked[2] = false;
+                lastReadPlate[1] = lastReadPlate[2] = "";
+                confirmCount[1] = confirmCount[2] = 0;
+            }
+        }
+
         // ✅ 3. ฟังก์ชันส่งรูปไปให้ Python API (ฉบับแก้ RAM ระเบิด 30GB)
-        private async Task SendToAI(Bitmap bitmap, int camId)
+        private async Task S(Bitmap bitmap, int camId)
         {
             // ถ้า AI ยังประมวลผลรูปเก่าไม่เสร็จ ให้โยนรูปใหม่ทิ้งทันที! ไม่ต้องรอคิวให้หนัก RAM
             if (isAIProcessing)
+            {
+                bitmap.Dispose();
+                return;
+            }
+
+            // ยังไม่ถึงคิวของกล้องนี้ หรือกล้องนี้อ่านเลขได้แล้ว → ทิ้งรูปทันทีเช่นกัน
+            if (!TryTakeLprTurn(camId))
             {
                 bitmap.Dispose();
                 return;
@@ -1197,6 +1277,7 @@ namespace SmartGateLPR1
                                 SetLprStatus(camId, $"✅ อ่านสำเร็จ (กล้อง{(camId == 1 ? "หน้า" : "หลัง")})", Color.Green);
                                 string provinceRead = result.province != null ? (string)result.province : "";
                                 OnPlateRead((string)result.text, provinceRead, camId);
+                                ReleaseLprTurn(camId, (string)result.text);
                             });
 
                             lock (boxLock)
@@ -1223,6 +1304,7 @@ namespace SmartGateLPR1
             {
                 isAIProcessing = false; // ปลดล็อกคิวรับรูปใหม่
                 bitmap.Dispose();       // 💡 เคลียร์ขยะรูปนี้ออกจาก RAM ทันที
+                ReleaseLprTurn(camId, "");
             }
         }
 
