@@ -62,11 +62,11 @@ namespace SmartGateLPR1
         private readonly object turnLock = new object();
         private int lprOwner = 0;                       // กล้องที่กำลังถือสิทธิ์อ่าน (0 = ว่าง)
         private DateTime lprOwnerSince = DateTime.MinValue;
-        private int lprOwnerMaxSec = 12;                // ถือนานเกินนี้ให้อีกตัวแย่งได้ กันค้าง
+        private int lprOwnerMaxSec = 8;                // ถือนานเกินนี้ให้อีกตัวแย่งได้ กันค้าง
         private bool[] plateLocked = new bool[3];       // อ่านเลขได้แล้ว ค้างไว้ ไม่อ่านซ้ำ
         private string[] lastReadPlate = new string[] { "", "", "" };
         private int[] confirmCount = new int[3];
-        private int readsToConfirm = 2;                 // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะค้าง
+        private int readsToConfirm = 3;                 // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะค้าง
 
         // กันแท็กเดิมวนกระตุ้นซ้ำหลังตัดสินไปแล้ว
         private string lastDecidedTag = "";
@@ -731,6 +731,10 @@ namespace SmartGateLPR1
             timerGate.Stop();
             gateBusy = false;                              // พร้อมรับคันถัดไป
             lock (hybridLock) { sawMismatch = false; plateSeenNoTagAt = DateTime.MinValue; }
+            // สำคัญ: ปลดล็อกป้ายที่ค้างไว้ของคันก่อนหน้า ไม่งั้นกล้องจะไม่อ่านป้ายให้คันถัดไปอีกเลย
+            lastDecidedTag = logTag;
+            lastDecidedAt = DateTime.Now;
+            ResetLprTurn();
 
             // รีเซ็ตโซนอนุญาต: ไฟแดง + ข้อความรอ (SetAccessUi จัดการ picGate/lblShowPlate/lblShowName/lblStatus ให้หมดแล้ว)
             SetAccessUi("⚪ รอตรวจสอบ...", Color.Gray, Color.Red, "-", "-", "พร้อมใช้งาน");
@@ -755,6 +759,12 @@ namespace SmartGateLPR1
             {
                 // แท็กเดิมที่ค้างอยู่ → ไม่รีเซ็ตเวลา ไม่งั้นตัวจับเวลาไม่มีวันครบ
                 if (tag == pendingRfidTag) return;
+
+                // แท็กเดิมที่เพิ่งตัดสินไป (รถอาจยังไม่ทันขยับออกจากสนามอ่าน) → ยังไม่รับซ้ำ
+                if (tag == lastDecidedTag &&
+                    (DateTime.Now - lastDecidedAt).TotalSeconds < sameTagCooldownSec) return;
+
+                pendingRfidTag = tag;
 
                 pendingRfidTag = tag;
                 pendingRfidTime = DateTime.Now;
@@ -897,6 +907,8 @@ namespace SmartGateLPR1
                 if (keepTrying) { pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; sawMismatch = true; }
                 else { gateBusy = true; pendingRfidTag = ""; sawMismatch = false; }
             }
+            if (keepTrying) ResetLprTurn();   // เคลียร์ล็อกป้ายเก่า ให้กล้องอ่านใหม่ได้จริงในรอบ retry
+
             string detail = blockedByDisagree
                 ? $"ป้ายหน้า-หลังไม่ตรงกัน ({p1} / {p2}) — กำลังอ่านซ้ำ..."
                 : $"ป้ายที่อ่านได้ยังไม่ตรงบัตร ({dbPlate}) — กำลังอ่านซ้ำ...";
@@ -1076,7 +1088,6 @@ namespace SmartGateLPR1
             string perm = row.Table.Columns.Contains("permission") ? row["permission"]?.ToString() ?? "" : "";
             string dbPlate = row["plate_number"]?.ToString() ?? "";
             string dbProv = row.Table.Columns.Contains("province") ? row["province"]?.ToString() ?? "" : "";
-            if (dbProv != "") dbPlate = dbPlate + " " + dbProv;
             string who = owner + (perm != "" ? $" ({perm})" : "");
 
             logMode = "RFID"; logTag = tag; logPlate1 = ""; logPlate2 = "";
@@ -1199,19 +1210,46 @@ namespace SmartGateLPR1
             }
         }
 
-        // คืนสิทธิ์ — ถ้าอ่านได้เลขเดิมซ้ำครบตามกำหนด ให้ค้างผลไว้เลย
-        private void ReleaseLprTurn(int camId, string plateRead)
+        /// <summary>รูปแบบป้ายไทยที่เป็นไปได้ — กรองผลอ่านเพี้ยนทิ้งก่อนนับยืนยัน</summary>
+        private static bool IsPlausiblePlate(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            string t = s.Replace(" ", "").Replace("-", "").Trim();
+            if (t.Length < 4 || t.Length > 10) return false;
+
+            int thai = 0, digit = 0;
+            foreach (char c in t)
+            {
+                if (c >= '\u0E00' && c <= '\u0E7F') thai++;
+                else if (char.IsDigit(c)) digit++;
+                else return false;                  // มีอักขระแปลกปน = อ่านเพี้ยนแน่นอน
+            }
+            return thai >= 1 && digit >= 2;         // ต้องมีทั้งตัวอักษรไทยและตัวเลข
+        }
+
+        /// <summary>นับผลอ่าน คืน true เมื่อ "ยืนยันแล้ว" (อ่านได้เลขเดิมซ้ำครบตามกำหนด)
+        /// ถ้ายังไม่ยืนยัน กล้องนี้จะถือคิวต่อ อ่านซ้ำจนกว่าจะชัวร์</summary>
+        private bool ReleaseLprTurn(int camId, string plateRead)
         {
             lock (turnLock)
             {
-                if (!string.IsNullOrWhiteSpace(plateRead) && plateRead.Length >= 4)
+                bool confirmed = false;
+
+                if (IsPlausiblePlate(plateRead))
                 {
                     if (plateRead == lastReadPlate[camId]) confirmCount[camId]++;
                     else { lastReadPlate[camId] = plateRead; confirmCount[camId] = 1; }
 
-                    if (confirmCount[camId] >= readsToConfirm) plateLocked[camId] = true;
+                    if (confirmCount[camId] >= readsToConfirm)
+                    {
+                        plateLocked[camId] = true;
+                        confirmed = true;
+                    }
                 }
-                if (lprOwner == camId) lprOwner = 0;             // ปล่อยให้อีกกล้องทำงานต่อ
+
+                // ปล่อยคิวเฉพาะตอนยืนยันแล้วเท่านั้น — ยังไม่ชัวร์ = อ่านซ้ำต่อ ไม่สลับให้อีกกล้อง
+                if (confirmed && lprOwner == camId) lprOwner = 0;
+                return confirmed;
             }
         }
 
@@ -1228,7 +1266,7 @@ namespace SmartGateLPR1
         }
 
         // ✅ 3. ฟังก์ชันส่งรูปไปให้ Python API (ฉบับแก้ RAM ระเบิด 30GB)
-        private async Task S(Bitmap bitmap, int camId)
+        private async Task SendToAI(Bitmap bitmap, int camId)
         {
             // ถ้า AI ยังประมวลผลรูปเก่าไม่เสร็จ ให้โยนรูปใหม่ทิ้งทันที! ไม่ต้องรอคิวให้หนัก RAM
             if (isAIProcessing)
@@ -1271,13 +1309,27 @@ namespace SmartGateLPR1
                             string plateText = (string)result.text;
                             string fullText = result.full_text != null ? (string)result.full_text : plateText;
 
+                            string provinceRead = result.province != null ? (string)result.province : "";
+                            string camName = camId == 1 ? "หน้า" : "หลัง";
+
+                            // นับยืนยันก่อน — ส่งเข้าระบบตัดสินเฉพาะเลขที่ชัวร์แล้วเท่านั้น
+                            bool confirmed = ReleaseLprTurn(camId, plateText);
+                            int seenTimes;
+                            lock (turnLock) seenTimes = confirmCount[camId];
+
                             this.Invoke((MethodInvoker)delegate
                             {
                                 SetPlateText(camId, fullText);
-                                SetLprStatus(camId, $"✅ อ่านสำเร็จ (กล้อง{(camId == 1 ? "หน้า" : "หลัง")})", Color.Green);
-                                string provinceRead = result.province != null ? (string)result.province : "";
-                                OnPlateRead((string)result.text, provinceRead, camId);
-                                ReleaseLprTurn(camId, (string)result.text);
+                                if (confirmed)
+                                {
+                                    SetLprStatus(camId, $"✅ ยืนยันแล้ว (กล้อง{camName})", Color.Green);
+                                    OnPlateRead(plateText, provinceRead, camId);
+                                }
+                                else
+                                {
+                                    SetLprStatus(camId, $"🔎 กำลังยืนยัน {seenTimes}/{readsToConfirm} (กล้อง{camName})",
+                                                 Color.DarkOrange);
+                                }
                             });
 
                             lock (boxLock)
@@ -1406,6 +1458,11 @@ namespace SmartGateLPR1
                             {
                                 hasPlateBox[camId] = false;
                                 lock (hybridLock) plateSeen[camId] = false;    // ⬅️ เพิ่ม
+                                // มองไม่เห็นป้ายแล้ว → ถ้ายังถือคิวอยู่และยังไม่ยืนยัน ให้ปล่อยคิวทันที กันอีกกล้องรอเก้อ
+                                lock (turnLock)
+                                {
+                                    if (lprOwner == camId && !plateLocked[camId]) lprOwner = 0;
+                                }
                                 UpdateLprZone(camId);
                             }
 
