@@ -105,8 +105,9 @@ def main():
 
         n_found += 1
         t0 = time.time()
+        raw_lines = []
         try:
-            text, province, conf = lpr_api.read_plate_paddle(plate_img)
+            text, province, conf, raw_lines = lpr_api.read_plate_paddle(plate_img, return_raw=True)
 
             # กัน YOLO ตัดกรอบพลาด — เหมือนที่ /predict ใน lpr_api.py ทำ
             # (ห้ามเช็คแค่ "text ว่างไหม" เพราะกรอบที่ตัดขาดยังอ่านออกมาเป็น
@@ -115,9 +116,11 @@ def main():
             crop_ratio = pw / max(1, ph)
             suspicious = crop_ratio < lpr_api.MIN_PLATE_ASPECT or not text or len(text) < 5
             if suspicious:
-                alt_text, alt_province, alt_conf = lpr_api.read_plate_paddle(frame)
+                alt_text, alt_province, alt_conf, alt_raw = lpr_api.read_plate_paddle(
+                    frame, return_raw=True)
                 if alt_text and (not text or len(alt_text) > len(text)):
                     text, province, conf = alt_text, alt_province, alt_conf
+                    raw_lines = alt_raw
             err = ""
         except Exception as e:
             text, province, conf, err = "", "", 0.0, str(e)
@@ -135,17 +138,24 @@ def main():
             n_prov_graded += 1
             n_prov_ok += int(prov_ok)
 
+        # ข้อความดิบทุกบรรทัดที่ PaddleOCR เห็น (ก่อนดัดด้วย thai_plate.py) —
+        # ไว้วินิจฉัยตอนจังหวัด/ทะเบียนผิดว่า OCR ไม่เจอบรรทัดนั้นเลย
+        # หรือเจอแต่ดัดไม่ตรง (สองสาเหตุนี้แก้คนละจุดกัน)
+        raw_str = " | ".join(f"{t!r}({sc:.2f})" for t, sc, _ in raw_lines)
+
         row.update({"ทะเบียนที่อ่านได้": text, "จังหวัดที่อ่านได้": province,
                     "conf": round(conf, 4),
                     "วินาที_ตรวจจับ": round(dt_det, 3), "วินาที_อ่าน": round(dt_read, 3),
                     "ทะเบียนถูก": ("✓" if plate_ok else "✗") if truth_plate else "",
                     "จังหวัดถูก": ("✓" if prov_ok else "✗") if truth_prov else "",
+                    "ข้อความดิบจาก_OCR": raw_str,
                     "หมายเหตุ": err})
         rows.append(row)
 
         mark = ("✓" if plate_ok else "✗") if truth_plate else " "
         print(f"{mark} {fname:28} '{text}' | {province} | conf {conf:.2f} | "
               f"ตรวจจับ {dt_det:.2f}s + อ่าน {dt_read:.2f}s")
+        print(f"     ดิบจาก OCR: {raw_str or '(ไม่เจอข้อความเลย)'}")
 
     # ---------- สรุป ----------
     def pct(a, b):

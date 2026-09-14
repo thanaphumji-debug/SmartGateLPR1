@@ -188,10 +188,12 @@ def deskew_plate(img, max_angle=25.0):
     except Exception:
         return img
 
-def read_plate_paddle(plate_img):
+def read_plate_paddle(plate_img, return_raw=False):
     """
     อ่านป้ายด้วย PaddleOCR ภาษาไทย แล้วดัดผลให้เข้ารูปแบบป้ายไทย
-    คืน (เลขทะเบียน, จังหวัด, ความมั่นใจ)
+    คืน (เลขทะเบียน, จังหวัด, ความมั่นใจ) — หรือเพิ่ม list บรรทัดดิบต่อท้ายเป็น
+    ค่าที่ 4 ถ้า return_raw=True (ไว้ debug ว่า PaddleOCR เห็นข้อความอะไรบ้าง
+    ก่อนดัด เช่น ไม่เจอบรรทัดจังหวัดเลย VS เจอแต่ดัดไม่ตรง)
 
     โมเดลที่ใช้เป็นโมเดลอ่านข้อความไทยทั่วไป ไม่ได้เทรนเฉพาะป้ายทะเบียน
     ผลดิบจึงมักเพี้ยน ต้องพึ่ง thai_plate.py ช่วยดัด (แก้เลข/เทียบชื่อจังหวัด)
@@ -208,9 +210,11 @@ def read_plate_paddle(plate_img):
     with model_lock:
         result = ocr.predict(plate_img)
 
+    # lines: [(ข้อความ, คะแนน, y_top), ...] — ใช้ debug ได้ว่า PaddleOCR เจอกี่บรรทัด
+    # (ถ้าเจอบรรทัดเดียว = text detection ไม่เจอบรรทัดจังหวัดเลย ไม่ใช่ดัดไม่ตรง)
     lines = _extract_lines(result)
     if not lines:
-        return "", "", 0.0
+        return ("", "", 0.0, []) if return_raw else ("", "", 0.0)
 
     parsed = parse_plate_lines(lines)
     plate_text = parsed["plate"]
@@ -226,6 +230,8 @@ def read_plate_paddle(plate_img):
     else:
         conf = sum(l[1] for l in lines) / len(lines)
 
+    if return_raw:
+        return plate_text, province, conf, lines
     return plate_text, province, conf
 
 
