@@ -29,6 +29,21 @@ PLATE_DETECTOR_PATH = os.path.join(BASE_DIR, "plate_detector.pt")
 CHAR_DETECTOR_PATH  = os.path.join(BASE_DIR, "char_detector.pt")
 # ========================= ค่าตั้งค่า =========================
 DETECT_CONF = 0.25                           # เกณฑ์ความมั่นใจขั้นต่ำของ YOLO
+# ขนาดภาพที่ป้อนให้ YOLO ตอนตรวจจับ  ตั้งทับได้ด้วย environment variable: LPR_IMGSZ
+#
+# ทำไมถึงเป็น 1280 ทั้งที่โมเดลเทรนมาที่ 640:
+#   วัดจริงกับ plate_detector.pt (YOLO11n) โดยจำลองรถอยู่ไกลบนเฟรม 1920x1080
+#   ยิ่งป้ายเล็กในเฟรม ยิ่งต้องใช้ imgsz ใหญ่ ไม่งั้นตรวจไม่เจอ
+#
+#     ป้ายกว้าง   imgsz=640   imgsz=960   imgsz=1280
+#       193px       0.835       0.899       0.851
+#        77px       0.760       0.807       0.822
+#        48px       0.613       0.703       0.739
+#        28px      ไม่เจอ       0.557       0.624
+#
+#   ถ้ากล้องตั้งใกล้และป้ายใหญ่เต็มเฟรมเสมอ ลดเป็น 960 ได้ (เร็วขึ้น ~30%)
+#   แต่อย่าลดเหลือ 640 ถ้ารถต้องถูกตรวจจับตั้งแต่ยังอยู่ไกล
+DETECT_IMGSZ = int(os.environ.get("LPR_IMGSZ", "1280"))
 CROP_PADDING = 12                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
 MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดที่ OCR มั่นใจต่ำกว่านี้
 # บันทึกภาพป้ายที่ crop ได้ลง debug_plate.jpg ทุกครั้งที่อ่าน (ใช้ตอน debug เท่านั้น)
@@ -184,7 +199,7 @@ def _extract_lines(result):
 def detect_best_plate(frame):
     """รัน YOLO หาป้าย คืน [x1,y1,x2,y2] ของกล่องที่มั่นใจสุด หรือ None ถ้าไม่เจอ"""
     with model_lock:
-       det = detector(frame, conf=DETECT_CONF, imgsz=1280, half=False, verbose=False, device=YOLO_DEVICE)
+       det = detector(frame, conf=DETECT_CONF, imgsz=DETECT_IMGSZ, half=False, verbose=False, device=YOLO_DEVICE)
     boxes = det[0].boxes
     if boxes is None or len(boxes) == 0:
         return None
@@ -341,7 +356,7 @@ def predict():
 
         # --- 2. YOLO หากล่องป้ายในภาพเต็ม ---
         with model_lock:
-            det = detector(frame, conf=DETECT_CONF, imgsz=1280, augment=True, half=False, verbose=False, device=YOLO_DEVICE)
+            det = detector(frame, conf=DETECT_CONF, imgsz=DETECT_IMGSZ, augment=True, half=False, verbose=False, device=YOLO_DEVICE)
         boxes = det[0].boxes
         if boxes is None or len(boxes) == 0:
             print("… ไม่พบป้ายในเฟรมนี้")
