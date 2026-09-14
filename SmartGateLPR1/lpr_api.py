@@ -12,6 +12,8 @@ import torch
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 
+from thai_plate import parse_plate_lines
+
 # บังคับ stdout เป็น UTF-8 กันภาษาไทยเพี้ยนบน Windows
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -33,7 +35,14 @@ MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดท
 # เปิดได้โดยตั้ง environment variable: LPR_DEBUG_PLATE=1
 SAVE_DEBUG_PLATE = os.environ.get("LPR_DEBUG_PLATE", "0") == "1"
 # ============================================================
-CHAR_CONF = 0.25          # เกณฑ์ความมั่นใจของตัวอักษร
+CHAR_CONF = 0.25          # เกณฑ์ความมั่นใจของตัวอักษร (ใช้เฉพาะเครื่องอ่านแบบ yolo)
+
+# เลือกว่าจะอ่านตัวอักษรบนป้ายด้วยอะไร  ตั้งผ่าน environment variable: LPR_OCR_ENGINE
+#   paddle = PaddleOCR ภาษาไทย (ค่าเริ่มต้น)
+#   yolo   = โมเดล YOLO อ่านตัวอักษรทีละตัว (char_detector.pt) ของเดิม เอาไว้เทียบผล
+OCR_ENGINE = os.environ.get("LPR_OCR_ENGINE", "paddle").strip().lower()
+# โมเดลอ่านข้อความไทยของ PaddleOCR (ดาวน์โหลดเองอัตโนมัติครั้งแรกที่รัน)
+PADDLE_REC_MODEL = os.environ.get("LPR_PADDLE_REC", "th_PP-OCRv5_mobile_rec")
 
 CHAR_MAP = {
     "A01": "ก", "A02": "ข", "A04": "ค", "A05": "ฅ", "A06": "ฆ",
@@ -87,16 +96,46 @@ else:
 print("=" * 55)
 
 # ---------- โหลดโมเดลตรวจจับป้าย (YOLO) ----------
+# ultralytics โหลด YOLOv8 และ YOLO11 ด้วยคำสั่งเดียวกัน ไม่ต้องแก้โค้ดเวลาเปลี่ยนรุ่น
+# แค่วางไฟล์ .pt รุ่นใหม่ทับ (ต้องใช้ ultralytics >= 8.3.0 ถึงจะรองรับ YOLO11)
 print("⏳ กำลังโหลด YOLO ตรวจจับป้าย...")
 detector = YOLO(PLATE_DETECTOR_PATH)
-print("⏳ กำลังโหลด YOLO อ่านตัวอักษร...")
-char_detector = YOLO(CHAR_DETECTOR_PATH)
+try:
+    print(f"   รุ่นโมเดล: {getattr(detector.model, 'yaml_file', '') or type(detector.model).__name__}"
+          f" | คลาส: {list(detector.names.values())}")
+except Exception:
+    pass
+
+# ---------- โหลดตัวอ่านตัวอักษรตามเครื่องที่เลือก ----------
+char_detector = None
+ocr = None
+
+if OCR_ENGINE == "yolo":
+    print("⏳ กำลังโหลด YOLO อ่านตัวอักษร (char_detector.pt)...")
+    char_detector = YOLO(CHAR_DETECTOR_PATH)
+else:
+    OCR_ENGINE = "paddle"
+    from paddleocr import PaddleOCR
+    PADDLE_DEVICE = "gpu:0" if USE_GPU else "cpu"
+    print(f"⏳ กำลังโหลด PaddleOCR ภาษาไทย ({PADDLE_REC_MODEL})...")
+    # ปิดโมดูลที่ไว้จัดการเอกสาร (หมุนหน้า/ดัดกระดาษ) ป้ายทะเบียนไม่ต้องใช้ และทำให้ช้า
+    ocr = PaddleOCR(
+        text_recognition_model_name=PADDLE_REC_MODEL,
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=True,   # ช่วยตอนป้ายเอียงเล็กน้อย
+        device=PADDLE_DEVICE,
+    )
+
+print(f"🔤 เครื่องอ่านตัวอักษร: {OCR_ENGINE}")
 
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
 print("🔥 กำลัง warm-up โมเดล...")
 try:
     _dummy = np.full((80, 240, 3), 255, dtype=np.uint8)
     detector(_dummy, verbose=False, device=YOLO_DEVICE)
+    if ocr is not None:
+        ocr.predict(_dummy)
 except Exception as e:
     print(f"(warm-up เตือน: {e})")
 
@@ -104,7 +143,11 @@ print("✅ AI พร้อมทำงานแล้ว! สแตนด์บ�
 
 
 def _extract_lines(result):
-    
+    """
+    แกะผลจาก PaddleOCR ให้เป็น list ของ (text, score, y_top)
+    เรียงจากบรรทัดบนลงล่าง  (บนสุด = เลขทะเบียน, ล่าง = จังหวัด)
+    เขียนแบบเผื่อ API เวอร์ชันต่างกัน (เข้าถึงได้ทั้งแบบ dict และ .json)
+    """
     if not result:
         return []
     res = result[0]
@@ -181,6 +224,47 @@ def deskew_plate(img, max_angle=25.0):
     except Exception:
         return img
 
+def read_plate_paddle(plate_img):
+    """
+    อ่านป้ายด้วย PaddleOCR ภาษาไทย แล้วดัดผลให้เข้ารูปแบบป้ายไทย
+    คืน (เลขทะเบียน, จังหวัด, ความมั่นใจ)
+
+    โมเดลที่ใช้เป็นโมเดลอ่านข้อความไทยทั่วไป ไม่ได้เทรนเฉพาะป้ายทะเบียน
+    ผลดิบจึงมักเพี้ยน ต้องพึ่ง thai_plate.py ช่วยดัด (แก้เลข/เทียบชื่อจังหวัด)
+    """
+    # เติมขอบขาวรอบภาพก่อนส่งให้ OCR — ตัวตรวจจับข้อความของ Paddle มักหาไม่เจอ
+    # ถ้าตัวหนังสือชิดขอบภาพพอดี (ซึ่งเป็นเรื่องปกติของ crop ที่ได้จาก YOLO)
+    if plate_img is not None and plate_img.size > 0:
+        pad = max(8, int(plate_img.shape[0] * 0.15))
+        plate_img = cv2.copyMakeBorder(plate_img, pad, pad, pad, pad,
+                                       cv2.BORDER_CONSTANT, value=(255, 255, 255))
+
+    # PaddleOCR ไม่ปลอดภัยเมื่อถูกเรียกพร้อมกันหลาย thread และ Flask รันแบบ threaded
+    # จึงต้องล็อกไว้เหมือนตอนเรียก YOLO
+    with model_lock:
+        result = ocr.predict(plate_img)
+
+    lines = _extract_lines(result)
+    if not lines:
+        return "", "", 0.0
+
+    parsed = parse_plate_lines(lines)
+    plate_text = parsed["plate"]
+    province = parsed["province"]
+
+    if SAVE_DEBUG_PLATE:
+        print(f"   [paddle] อ่านดิบ: {parsed['raw']}")
+
+    # ความมั่นใจ: ใช้ของบรรทัดเลขทะเบียนเป็นหลัก เพราะเป็นตัวตัดสินการเข้า-ออก
+    # ถ้าดัดเป็นทะเบียนไม่ได้เลย ให้ถือว่าอ่านไม่สำเร็จ (คะแนนเฉลี่ยไว้ดูเฉย ๆ)
+    if plate_text:
+        conf = parsed["plate_score"]
+    else:
+        conf = sum(l[1] for l in lines) / len(lines)
+
+    return plate_text, province, conf
+
+
 def read_plate_chars(plate_img):
     """
     รัน YOLO ตัวที่ 2 บน crop ป้าย -> อ่านตัวอักษรทีละตัว
@@ -216,6 +300,13 @@ def read_plate_chars(plate_img):
 
     avg_conf = sum(scores) / len(scores) if scores else 0.0
     return plate_text, province, avg_conf
+
+
+def read_plate(plate_img):
+    """อ่านป้ายด้วยเครื่องอ่านที่เลือกไว้ (ดู OCR_ENGINE)"""
+    if OCR_ENGINE == "yolo":
+        return read_plate_chars(plate_img)
+    return read_plate_paddle(plate_img)
 
 @app.route("/detect", methods=["POST"])
 def detect():
@@ -272,11 +363,11 @@ def predict():
             return jsonify({"status": "error", "message": "crop ป้ายว่าง"})
         plate = deskew_plate(plate)      # หมุนป้ายที่เอียงให้ตรงก่อนอ่าน
 
-        # --- 3. YOLO ตัวที่ 2 อ่านตัวอักษรทีละตัว ---
+        # --- 3. อ่านตัวอักษรบนป้าย (PaddleOCR หรือ YOLO ตามที่ตั้งไว้) ---
         if SAVE_DEBUG_PLATE:
             cv2.imwrite("debug_plate.jpg", plate)
 
-        plate_text, province, confidence = read_plate_chars(plate)
+        plate_text, province, confidence = read_plate(plate)
         print(f"🔤 อ่านตัวอักษร: '{plate_text}' | จังหวัด: '{province}' | conf {confidence:.2f}")
 
         if not plate_text:

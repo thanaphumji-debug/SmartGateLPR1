@@ -1,9 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('plate_detector.pt', '.'), ('char_detector.pt', '.')]
+datas = [('plate_detector.pt', '.'), ('char_detector.pt', '.'), ('thai_plate.py', '.')]
 binaries = []
-hiddenimports = []
+hiddenimports = ['thai_plate']
+tmp_ret = collect_all('paddleocr')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('paddle')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ultralytics')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('torch')

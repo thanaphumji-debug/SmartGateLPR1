@@ -1,0 +1,22 @@
+# แพ็กเกจของฝั่ง AI (lpr_api.py) — ติดตั้งด้วย:  pip install -r requirements.txt
+#
+# หมายเหตุเรื่อง GPU:
+#   ไฟล์นี้ลง torch/paddle รุ่น CPU ถ้ามีการ์ดจอ NVIDIA และอยากรันบน GPU
+#   ให้ลง torch ตามคำสั่งจาก https://pytorch.org (เลือก CUDA ให้ตรงกับไดรเวอร์)
+#   และลง paddlepaddle-gpu แทน paddlepaddle
+
+# ---- ตรวจจับป้าย ----
+# ต้อง >= 8.3.0 ขึ้นไป ถึงจะรองรับโมเดล YOLO11 (รุ่นก่อนหน้ารองรับแค่ถึง YOLOv8/v10)
+ultralytics>=8.3.0
+torch>=2.0
+torchvision>=0.15
+
+# ---- อ่านตัวอักษรบนป้าย ----
+# PaddleOCR 3.x ใช้ API แบบ ocr.predict() และมีโมเดลภาษาไทย th_PP-OCRv5_mobile_rec
+paddleocr>=3.0.0
+paddlepaddle>=3.0.0
+
+# ---- อื่น ๆ ----
+flask>=3.0
+opencv-python>=4.8
+numpy>=1.24
