@@ -20,6 +20,16 @@ namespace SmartGateLPR1
             // บังคับ RTSP ผ่าน TCP + โหมดหน่วงต่ำ (ห้ามใส่ buffer_size ใหญ่ จะยิ่งดีเลย์)
             Environment.SetEnvironmentVariable("OPENCV_FFMPEG_CAPTURE_OPTIONS",
                 "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0|reorder_queue_size;0|stimeout;5000000");
+            var st0 = SettingsStore.Load();
+            if (!st0.AcceptedEula)
+            {
+                using (var eula = new EulaForm())
+                {
+                    if (eula.ShowDialog() != DialogResult.OK) return;   // ไม่ยอมรับ = ปิดโปรแกรม
+                }
+                st0.AcceptedEula = true;
+                SettingsStore.Save(st0);
+            }
             Application.Run(new btnDisconnectRFID());
         }
     }

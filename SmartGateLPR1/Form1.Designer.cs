@@ -75,7 +75,7 @@
             // pbCamera1
             // 
             pbCamera1.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
-            pbCamera1.Location = new Point(718, 53);
+            pbCamera1.Location = new Point(12, 61);
             pbCamera1.Name = "pbCamera1";
             pbCamera1.Size = new Size(678, 406);
             pbCamera1.SizeMode = PictureBoxSizeMode.Zoom;
@@ -107,7 +107,7 @@
             // pbCamera2
             // 
             pbCamera2.Anchor = AnchorStyles.Top | AnchorStyles.Bottom;
-            pbCamera2.Location = new Point(10, 53);
+            pbCamera2.Location = new Point(705, 61);
             pbCamera2.Name = "pbCamera2";
             pbCamera2.Size = new Size(689, 406);
             pbCamera2.SizeMode = PictureBoxSizeMode.Zoom;
