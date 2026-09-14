@@ -29,6 +29,9 @@ CHAR_DETECTOR_PATH  = os.path.join(BASE_DIR, "char_detector.pt")
 DETECT_CONF = 0.25                           # เกณฑ์ความมั่นใจขั้นต่ำของ YOLO
 CROP_PADDING = 12                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
 MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดที่ OCR มั่นใจต่ำกว่านี้
+# บันทึกภาพป้ายที่ crop ได้ลง debug_plate.jpg ทุกครั้งที่อ่าน (ใช้ตอน debug เท่านั้น)
+# เปิดได้โดยตั้ง environment variable: LPR_DEBUG_PLATE=1
+SAVE_DEBUG_PLATE = os.environ.get("LPR_DEBUG_PLATE", "0") == "1"
 # ============================================================
 CHAR_CONF = 0.25          # เกณฑ์ความมั่นใจของตัวอักษร
 
@@ -270,7 +273,8 @@ def predict():
         plate = deskew_plate(plate)      # หมุนป้ายที่เอียงให้ตรงก่อนอ่าน
 
         # --- 3. YOLO ตัวที่ 2 อ่านตัวอักษรทีละตัว ---
-        cv2.imwrite("debug_plate.jpg", plate)
+        if SAVE_DEBUG_PLATE:
+            cv2.imwrite("debug_plate.jpg", plate)
 
         plate_text, province, confidence = read_plate_chars(plate)
         print(f"🔤 อ่านตัวอักษร: '{plate_text}' | จังหวัด: '{province}' | conf {confidence:.2f}")

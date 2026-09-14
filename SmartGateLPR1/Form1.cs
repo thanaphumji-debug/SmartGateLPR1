@@ -1178,6 +1178,19 @@ namespace SmartGateLPR1
                     gateBusy = true;
                     pendingRfidTag = "";
                 }
+                // เคสB: มีบัตร + เคยอ่านป้ายได้แต่ไม่ตรงบัตร + ครบเวลาอ่านซ้ำ → ปฏิเสธจริง
+                // (ต้องมีเคสนี้ไว้ใน timer ด้วย เพราะถ้ารถพ้นโซนกล้องไปก่อน จะไม่มีป้ายใหม่
+                //  เข้ามาเรียก DecideWithRfid ให้ตัดสินอีก แล้ว sawMismatch จะค้าง
+                //  ทำให้ pendingRfidTag ไม่ถูกล้าง และเคส A/A2/A3 ก็ทำงานไม่ได้ทั้งหมด)
+                else if (haveRfid && sawMismatch &&
+                         (DateTime.Now - pendingRfidTime).TotalSeconds >= retryMaxSec)
+                {
+                    tagMismatchDeny = pendingRfidTag;
+                    gateBusy = true;
+                    pendingRfidTag = "";
+                    pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                    sawMismatch = false;
+                }
                 // เคสC: มีป้าย ไม่มีบัตร
                 else if (havePlate && !haveRfid)
                 {
