@@ -40,6 +40,9 @@ namespace SmartGateLPR1
 
         private DatabaseHelper db;
         private IBarrier barrier;
+        private System.Windows.Forms.Label? lblBarrierStatus;             // ป้ายบอกสถานะไม้กั้นบนหน้าหลัก
+        private readonly ToolTip barrierTip = new ToolTip();
+        private int gateOpenSec = 3;                                      // เปิดไม้กั้นค้างกี่วินาที (ตั้งได้ในหน้าตั้งค่า)
 
         // ตัวแปร Global สำหรับรองรับกล้อง 2 ตัว (แยกตาม ID กล้อง)
         private Rectangle triggerZone = new Rectangle(150, 200, 400, 200);
@@ -179,7 +182,8 @@ namespace SmartGateLPR1
             InitSideMenu();
             LoadSavedSettings();
             LoadAccessPolicy();
-            barrier = BarrierFactory.Create();
+            InitBarrierStatus();
+            ReloadBarrier();            // สร้างตัวควบคุมไม้กั้น + อัปเดตป้ายสถานะ
             InitHistoryButton();
             if (!string.IsNullOrEmpty(DatabaseHelper.LastSchemaError))
             {
@@ -255,6 +259,11 @@ namespace SmartGateLPR1
             {
                 ToggleMenu();
                 using (var f = new StorageSettingsForm()) f.ShowDialog(this);
+            }));
+            panelMenu.Controls.Add(MakeMenuButton("🚦  ตั้งค่าไม้กั้น", 350, (s, e) =>
+            {
+                ToggleMenu();
+                using (var f = new BarrierSettingsForm(this)) f.ShowDialog(this);
             }));
 
             Controls.Add(panelMenu);
@@ -991,6 +1000,59 @@ namespace SmartGateLPR1
         }
 
         // ปุ่ม "ประวัติการเข้า-ออก" ในโซนอนุญาต (สร้างด้วยโค้ด ไม่ต้องเพิ่มใน Designer)
+        // ---- ไม้กั้น: ป้ายบอกสถานะบนหน้าหลัก + โหลดค่าที่ตั้งไว้ใหม่ ----
+
+        private void InitBarrierStatus()
+        {
+            lblBarrierStatus = new System.Windows.Forms.Label
+            {
+                AutoSize = true,
+                Location = new System.Drawing.Point(39, 247),
+                Font = new Font("Tahoma", 8.5f, FontStyle.Bold),
+                ForeColor = Color.Gray,
+                Text = "🚦 ไม้กั้น: -",
+            };
+            groupBox4.Controls.Add(lblBarrierStatus);
+            lblBarrierStatus.BringToFront();
+        }
+
+        /// <summary>สร้างตัวควบคุมไม้กั้นใหม่ตามค่าที่ตั้งไว้ (เรียกหลังบันทึกหน้าตั้งค่า)</summary>
+        public void ReloadBarrier()
+        {
+            try { barrier?.Dispose(); } catch { }
+
+            var st = SettingsStore.Load();
+            barrier = BarrierFactory.Create(st);
+            gateOpenSec = st.GateOpenSec > 0 ? st.GateOpenSec : 3;
+
+            if (lblBarrierStatus == null) return;
+
+            string mode = (st.BarrierMode ?? "simulate").ToLower();
+            string shortText;
+            Color color;
+            if (mode == "serial")
+            {
+                shortText = $"🚦 ไม้กั้น: {st.BarrierComPort} · {st.BarrierBaudRate} bps";
+                color = Color.FromArgb(0, 100, 160);
+            }
+            else if (mode == "http")
+            {
+                shortText = "🚦 ไม้กั้น: บอร์ดในเครือข่าย";
+                color = Color.FromArgb(0, 100, 160);
+            }
+            else
+            {
+                shortText = "🚦 ไม้กั้น: โหมดจำลอง";
+                color = Color.Gray;
+            }
+
+            lblBarrierStatus.Text = shortText;
+            lblBarrierStatus.ForeColor = color;
+            // รายละเอียดเต็มไว้ใน tooltip กันข้อความยาวเกินกรอบ
+            barrierTip.SetToolTip(lblBarrierStatus, barrier.Describe +
+                                  $"\nเปิดค้าง {gateOpenSec} วินาที ก่อนสั่งปิดอัตโนมัติ");
+        }
+
         private void InitHistoryButton()
         {
             var btn = new Button
@@ -1097,7 +1159,7 @@ namespace SmartGateLPR1
             SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen, plate, who, detail);
             try { barrier?.Open(); } catch { }
             WriteAccessLog("ALLOWED", detail, true);       // ผ่าน → เก็บภาพด้วย
-            this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
+            this.BeginInvoke(new Action(() => { timerGate.Interval = gateOpenSec * 1000; timerGate.Start(); }));
         }
 
         private void DenyAccess(string reason)
@@ -1131,7 +1193,7 @@ namespace SmartGateLPR1
                         dbPlate, who, "⚠️ ตรวจพบแท็ก RFID แต่ตรวจจับไม่พบป้ายทะเบียน");
             try { barrier?.Open(); } catch { }
             WriteAccessLog("ALLOWED", "⚠️ ตรวจพบแท็ก RFID แต่ตรวจจับไม่พบป้ายทะเบียน", true);
-            this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
+            this.BeginInvoke(new Action(() => { timerGate.Interval = gateOpenSec * 1000; timerGate.Start(); }));
         }
 
         private void TimerHybridTimeout_Tick(object sender, EventArgs e)

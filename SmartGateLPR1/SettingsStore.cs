@@ -39,6 +39,7 @@ namespace SmartGateLPR1
         public string BarrierCloseCmd { get; set; } = "A0 01 00 A1";
         public string BarrierOpenUrl { get; set; } = "http://192.168.0.60/open";
         public string BarrierCloseUrl { get; set; } = "http://192.168.0.60/close";
+        public int GateOpenSec { get; set; } = 3;   // เปิดไม้กั้นค้างกี่วินาที ก่อนสั่งปิดอัตโนมัติ
     }
 
     public static class SettingsStore
