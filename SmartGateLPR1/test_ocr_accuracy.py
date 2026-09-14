@@ -107,6 +107,17 @@ def main():
         t0 = time.time()
         try:
             text, province, conf = lpr_api.read_plate_paddle(plate_img)
+
+            # กัน YOLO ตัดกรอบพลาด — เหมือนที่ /predict ใน lpr_api.py ทำ
+            # (ห้ามเช็คแค่ "text ว่างไหม" เพราะกรอบที่ตัดขาดยังอ่านออกมาเป็น
+            # ทะเบียนรูปแบบถูกต้องได้ เช่น "กย3" จากป้ายจริง "กย3779")
+            ph, pw = plate_img.shape[:2]
+            crop_ratio = pw / max(1, ph)
+            suspicious = crop_ratio < lpr_api.MIN_PLATE_ASPECT or not text or len(text) < 5
+            if suspicious:
+                alt_text, alt_province, alt_conf = lpr_api.read_plate_paddle(frame)
+                if alt_text and (not text or len(alt_text) > len(text)):
+                    text, province, conf = alt_text, alt_province, alt_conf
             err = ""
         except Exception as e:
             text, province, conf, err = "", "", 0.0, str(e)

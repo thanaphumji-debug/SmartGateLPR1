@@ -44,6 +44,10 @@ DETECT_CONF = 0.25                           # เกณฑ์ความมั
 #   แต่อย่าลดเหลือ 640 ถ้ารถต้องถูกตรวจจับตั้งแต่ยังอยู่ไกล
 DETECT_IMGSZ = int(os.environ.get("LPR_IMGSZ", "1280"))
 CROP_PADDING = 12                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
+# สัดส่วนกว้าง/สูงขั้นต่ำของกรอบที่ถือว่า "น่าจะเป็นป้ายจริง"
+# ป้ายไทยจริงกว้างกว่าสูงชัดเจน วัดจากภาพทดสอบได้ ~1.6 เท่าขึ้นไป
+# ถ้าต่ำกว่านี้ = สงสัยว่า YOLO ตัดกรอบพลาด (ดู "กันกรอบพลาด" ใน /predict)
+MIN_PLATE_ASPECT = 1.3
 MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดที่ OCR มั่นใจต่ำกว่านี้
 # บันทึกภาพป้ายที่ crop ได้ลง debug_plate.jpg ทุกครั้งที่อ่าน (ใช้ตอน debug เท่านั้น)
 # เปิดได้โดยตั้ง environment variable: LPR_DEBUG_PLATE=1
@@ -285,6 +289,29 @@ def predict():
             cv2.imwrite("debug_plate.jpg", plate)
 
         plate_text, province, confidence = read_plate_paddle(plate)
+
+        # กันกรณี YOLO ตัดกรอบพลาด (พบว่าเกิดได้เมื่อป้ายกินพื้นที่เกือบเต็มเฟรม —
+        # โมเดลไม่ค่อยเจอภาพแบบนี้ตอนเทรน จึงหากรอบผิดจนตัดตัวเลขขาดไปครึ่งป้าย)
+        #
+        # ⚠️ ห้ามเช็คแค่ "plate_text ว่างไหม" — วัดจากตัวอย่างจริงพบว่ากรอบที่ตัด
+        # ขาด (เช่น เห็นแค่ "กย 3" จากป้ายจริง "กย 3779") ยังอ่านออกมาเป็น "กย3"
+        # ซึ่งรูปแบบถูกต้องตามไวยากรณ์ป้ายไทยทุกอย่าง (พยัญชนะ+เลข) thai_plate.py
+        # จึงไม่ทิ้ง กลายเป็นทะเบียนผิดที่ดูน่าเชื่อถือแทนที่จะฟ้อง error
+        #
+        # สัญญาณที่แยกได้จริง (วัดจากภาพทดสอบ 4 ภาพ: 3 ภาพกรอบพัง + 1 ภาพกรอบปกติ)
+        # คือ "สัดส่วนกว้าง/สูงของกรอบ" — ป้ายไทยจริงกว้างกว่าสูงชัดเจน (~1.6 เท่าขึ้นไป)
+        # ส่วนกรอบที่ YOLO ตัดพลาดจะออกมาเกือบเป็นสี่เหลี่ยมจัตุรัสหรือแคบกว่านั้น
+        crop_ratio = (x2 - x1) / max(1, (y2 - y1))
+        suspicious = crop_ratio < MIN_PLATE_ASPECT or not plate_text or len(plate_text) < 5
+        if suspicious:
+            alt_text, alt_province, alt_conf = read_plate_paddle(frame)
+            # เลือกผลที่ "สมบูรณ์กว่า" โดยดูจากความยาว — ถ้ากรอบตัดขาดจริง ผลจาก
+            # ภาพเต็มควรยาวกว่า (ไม่ได้ตัด) ถ้าอ่านจากกรอบได้ครบอยู่แล้วก็ไม่เปลี่ยน
+            if alt_text and (not plate_text or len(alt_text) > len(plate_text)):
+                print(f"   ⚠️ กรอบต้องสงสัย (ratio={crop_ratio:.2f}, อ่านได้ '{plate_text}')"
+                      f" — ใช้ผลจากภาพเต็มแทน: '{alt_text}'")
+                plate_text, province, confidence = alt_text, alt_province, alt_conf
+
         print(f"🔤 อ่านตัวอักษร: '{plate_text}' | จังหวัด: '{province}' | conf {confidence:.2f}")
 
         if not plate_text:
