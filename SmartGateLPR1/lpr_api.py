@@ -92,6 +92,17 @@ ocr = PaddleOCR(
     use_doc_unwarping=False,
     use_textline_orientation=True,   # ช่วยตอนป้ายเอียงเล็กน้อย
     device=PADDLE_DEVICE,
+    # ---------- แก้ปัญหา: หาไม่เจอบรรทัดจังหวัด (ตัวเล็กกว่าทะเบียนมาก) ----------
+    # โมเดล PP-OCRv5_server_det ที่ pipeline นี้เลือกใช้ ตั้ง resize เริ่มต้นเป็น
+    # limit_type="max": ย่อภาพลงถ้าใหญ่เกิน 960px เท่านั้น "ไม่เคย" ขยายภาพเล็ก
+    # ให้ใหญ่ขึ้นเลย (ดูโค้ดจริงใน paddlex/inference/models/text_detection/
+    # processors.py: DetResizeForTest.resize_image_type1) ป้ายที่ crop มาได้
+    # สูงแค่ 120-350px จึงถูกส่งเข้า detection ที่ความละเอียดเดิมเป๊ะ ๆ ไม่ขยาย
+    # ทำให้ตัวอักษรบรรทัดจังหวัด (เล็กกว่าทะเบียนมาก) เล็กเกินกว่าจะตรวจจับเจอ
+    # สลับเป็น limit_type="min" (ค่าเริ่มต้นที่โมเดล det รุ่นอื่นในตระกูล
+    # PP-OCR ใช้กันตามปกติ) จะขยายภาพที่เล็กกว่า 736px ให้ใหญ่ขึ้นก่อนตรวจจับ
+    text_det_limit_type="min",
+    text_det_limit_side_len=736,
 )
 
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
