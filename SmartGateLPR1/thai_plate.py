@@ -133,17 +133,27 @@ def match_province(s, min_ratio=0.6):
     if txt in THAI_PROVINCES:
         return txt, 1.0
 
+    # เผื่อ OCR อ่านได้แค่บางส่วนของชื่อยาว ๆ เช่น "ราชสีมา"/"จนบุรี" ของ
+    # "นครราชสีมา"/"กาญจนบุรี" (มักเกิดตอนตัวหนังสือครึ่งหนึ่งโดนบังหรือขาดขอบภาพ)
+    #
+    # เช็คก่อน fuzzy ratio เสมอ เพราะ substring ที่ตรงเป๊ะเป็นหลักฐานที่หนักแน่นกว่า
+    # ค่าความคล้ายที่วัดจากตัวอักษรทั้งหมด — ถ้าเช็คทีหลังแบบ fallback (เดิมทำแบบนี้)
+    # จังหวัดอื่นที่บังเอิญมีตัวอักษรคล้ายกันโดยรวมมากกว่าจะแซงไปก่อน
+    # ทำให้ได้คำตอบผิดแบบมั่นใจสูง เช่น "จนบุรี" ไปจับคู่เป็น "จันทบุรี" แทน "กาญจนบุรี"
+    if len(txt) >= 4:
+        substr_hits = [name for name in THAI_PROVINCES if txt in name]
+        if len(substr_hits) == 1:
+            return substr_hits[0], 0.85
+        if len(substr_hits) > 1:
+            # ตรงหลายจังหวัด (คลุมเครือ) ใช้ fuzzy ratio ช่วยเลือกในกลุ่มนี้แทน
+            best = max(substr_hits, key=lambda n: difflib.SequenceMatcher(None, txt, n).ratio())
+            return best, 0.8
+
     best, best_ratio = "", 0.0
     for name in THAI_PROVINCES:
         r = difflib.SequenceMatcher(None, txt, name).ratio()
         if r > best_ratio:
             best, best_ratio = name, r
-
-    # เผื่อ OCR อ่านได้แค่บางส่วนของชื่อยาว ๆ เช่น "ราชสีมา" ของ "นครราชสีมา"
-    if best_ratio < min_ratio and len(txt) >= 4:
-        for name in THAI_PROVINCES:
-            if txt in name:
-                return name, 0.75
 
     return (best, best_ratio) if best_ratio >= min_ratio else ("", best_ratio)
 
@@ -227,6 +237,10 @@ if __name__ == "__main__":
         ("เชียงใหม", "เชียงใหม่"),             # สะกดขาดไปหนึ่งตัว
         ("นครราชสึมา", "นครราชสีมา"),          # สระเพี้ยน
         ("ราชสีมา", "นครราชสีมา"),             # อ่านได้แค่บางส่วน
+        ("จนบุรี", "กาญจนบุรี"),               # อ่านขาดครึ่งหน้า (โดนบัง/ตัดขอบภาพ)
+                                               # ก่อนแก้: จับผิดเป็น "จันทบุรี" เพราะ
+                                               # fuzzy ratio ทั้งคำ (0.86) ชนะไปก่อนที่จะ
+                                               # เช็ค substring ซึ่งตรงกับ "กาญจนบุรี" เป๊ะ
         ("3779", ""),                          # ตัวเลขล้วน
         ("ก", ""),                             # สั้นเกินไป
     ]:
