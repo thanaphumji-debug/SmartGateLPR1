@@ -39,6 +39,7 @@ namespace SmartGateLPR1
         private bool isCam2Running = false;
 
         private DatabaseHelper db;
+        private IBarrier barrier;
 
         // ตัวแปร Global สำหรับรองรับกล้อง 2 ตัว (แยกตาม ID กล้อง)
         private Rectangle triggerZone = new Rectangle(150, 200, 400, 200);
@@ -123,6 +124,7 @@ namespace SmartGateLPR1
         private DateTime plateSeenNoTagAt = DateTime.MinValue;  // เวลาที่เริ่มเห็นป้ายทั้งที่ยังไม่มีแท็ก (โหมด RFID)
         private int plateOnlyDenySec = 3;                       // เจอป้ายแต่ไม่มีแท็กกี่วิ → ปฏิเสธ
         private bool[] plateSeen = new bool[3];   // index 1,2 = กล้องหน้า/หลังเจอป้ายไหม
+        private DateTime lastPlateSeenAt = DateTime.MinValue;  // เวลาที่กล้องใดกล้องหนึ่งเห็นป้ายล่าสุด
 
         // ตัดช่องว่างก่อนเทียบ (ฐานข้อมูลเก็บ "กท 2058" แต่ LPR อ่านได้ "กท2058")
         private static string NormPlate(string s) =>
@@ -134,15 +136,50 @@ namespace SmartGateLPR1
         private bool sawMismatch = false;
 
 
+        private Process aiProcess = null;
+
+        private void StartAiService()
+        {
+            try
+            {
+                // ถ้ามีบริการ AI เปิดอยู่แล้ว (ตอน dev เปิดเองด้วย python) ไม่ต้องเปิดซ้ำ
+                using (var probe = new System.Net.Sockets.TcpClient())
+                {
+                    try { probe.Connect("127.0.0.1", 5000); return; } catch { }
+                }
+
+                string exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ai", "lpr_api.exe");
+                if (!File.Exists(exe)) return;   // โหมด dev: ไม่มีไฟล์นี้ ข้ามไป
+
+                aiProcess = new Process();
+                aiProcess.StartInfo.FileName = exe;
+                aiProcess.StartInfo.WorkingDirectory = Path.GetDirectoryName(exe);
+                aiProcess.StartInfo.CreateNoWindow = true;
+                aiProcess.StartInfo.UseShellExecute = false;
+                aiProcess.Start();
+            }
+            catch (Exception ex) { Console.WriteLine("เปิดบริการ AI ไม่ได้: " + ex.Message); }
+        }
+
+        private void StopAiService()
+        {
+            try
+            {
+                if (aiProcess != null && !aiProcess.HasExited) aiProcess.Kill(true);
+            }
+            catch { }
+        }
 
         public btnDisconnectRFID()
         {
             InitializeComponent();
+            StartAiService();
             try { db = new DatabaseHelper(); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
             InitSideMenu();
             LoadSavedSettings();
             LoadAccessPolicy();
+            barrier = BarrierFactory.Create();
             InitHistoryButton();
             if (!string.IsNullOrEmpty(DatabaseHelper.LastSchemaError))
             {
@@ -460,40 +497,20 @@ namespace SmartGateLPR1
 
 
                         // --- 2. ระบบ Auto-Trigger เช็คป้ายทะเบียน ---
-                        // 1. เช็ค Cooldown แยกตามกล้องตัวนั้นๆ
-                        if ((DateTime.Now - lastCaptureTimes[camId]).TotalSeconds < cooldownSeconds)
+                        // เงื่อนไขใหม่: ยิงอ่านตราบใดที่ "เห็นกรอบป้ายอยู่" ไม่ใช่แค่ตอนมีความเคลื่อนไหว
+                        // (แก้ปัญหา: รถหยุดนิ่งสนิทแล้วภาพไม่เปลี่ยน ระบบเดิมจะไม่ยิงอ่านซ้ำอีกเลย)
+                        bool seeingPlate;
+                        lock (boxLock) seeingPlate = hasPlateBox[camId];
+
+                        if (seeingPlate &&
+                            (DateTime.Now - lastCaptureTimes[camId]).TotalSeconds >= cooldownSeconds)
                         {
-                            image.Dispose();
-                            continue;
-                        }
+                            lastCaptureTimes[camId] = DateTime.Now;
 
-                        // 2. ตัดภาพ (Crop) เอาเฉพาะในกรอบ Trigger Zone ที่เราตีเส้นไว้
-                        Bitmap currentZoneImage = image.Clone(triggerZone, image.PixelFormat);
-
-                        // เช็คภาพพื้นหลังแยกตามกล้อง
-                        if (previousZoneImages[camId] == null)
-                        {
-                            previousZoneImages[camId] = currentZoneImage;
-                            image.Dispose();
-                            continue;
-                        }
-
-                        // คำนวณความต่าง โดยเทียบกับภาพก่อนหน้าของกล้องตัวเองเท่านั้น!
-                        double diffPercentage = CalculateDifference(previousZoneImages[camId], currentZoneImage);
-
-                        // ถ้ามีการเปลี่ยนแปลงเกินเกณฑ์ (มีรถวิ่งเข้ากล้องตัวนั้น)
-                        if (diffPercentage >= triggerThreshold)
-                        {
-                            lastCaptureTimes[camId] = DateTime.Now; // เริ่มนับ Cooldown ของกล้องตัวนี้
-
-                            // ส่งรูปเต็มไปให้ AI อ่าน
+                            // ส่งรูปเต็มไปให้ AI อ่าน (ภาพใหม่จากเฟรมปัจจุบันเสมอ)
                             Bitmap frameToSend = new Bitmap(image);
                             Task.Run(() => SendToAI(frameToSend, camId));
                         }
-
-                        // อัปเดตภาพเก่าเก็บไว้เทียบในเฟรมถัดไป (ของใครของมัน)
-                        previousZoneImages[camId].Dispose();
-                        previousZoneImages[camId] = currentZoneImage;
 
                         image.Dispose();
                     }
@@ -539,6 +556,10 @@ namespace SmartGateLPR1
             isRfidRunning = false;
             if (rfidTelnet != null) rfidTelnet.Disconnect();
             if (rfidThread != null && rfidThread.IsAlive) rfidThread.Join(200);
+
+            try { barrier?.Dispose(); } catch { }
+
+            StopAiService();
         }
 
 
@@ -729,6 +750,7 @@ namespace SmartGateLPR1
         private void timerGate_Tick(object sender, EventArgs e)
         {
             timerGate.Stop();
+            try { barrier?.Close(); } catch { }
             gateBusy = false;                              // พร้อมรับคันถัดไป
             lock (hybridLock) { sawMismatch = false; plateSeenNoTagAt = DateTime.MinValue; }
             // สำคัญ: ปลดล็อกป้ายที่ค้างไว้ของคันก่อนหน้า ไม่งั้นกล้องจะไม่อ่านป้ายให้คันถัดไปอีกเลย
@@ -867,6 +889,16 @@ namespace SmartGateLPR1
             bool platesDisagree = bothRead && NormPlate(p1) != NormPlate(p2);   // อ่านได้ทั้งคู่แต่เลขคนละอัน
             bool m1 = p1 != "" && NormPlate(p1) == NormPlate(dbPlate);
             bool m2 = p2 != "" && NormPlate(p2) == NormPlate(dbPlate);
+
+            // สวิตช์ 4 เปิด + อ่านได้แค่กล้องเดียว + อีกกล้องกำลังเห็นป้ายอยู่ → รอให้อ่านครบก่อน
+            // (ไม่งั้นกล้องแรกที่ตรงจะสั่งอนุญาตทันที สวิตช์ 4 จะไม่มีโอกาสทำงานเลย)
+            if (requirePlatesAgree && !bothRead && havePlate)
+            {
+                int other = (p1 != "") ? 2 : 1;
+                bool otherSeeing;
+                lock (hybridLock) otherSeeing = plateSeen[other];
+                if (otherSeeing && (DateTime.Now - pendingRfidTime).TotalSeconds < retryMaxSec) return;
+            }
 
             // สวิตช์ "ต้องตรงทั้ง 2 กล้อง" = บล็อกเฉพาะตอนอ่านได้ทั้งคู่แต่ขัดกัน
             // (รถติดป้ายด้านเดียว อีกกล้องอ่านไม่เจอ → ไม่ถือว่าขัด ยังผ่านได้)
@@ -1063,6 +1095,7 @@ namespace SmartGateLPR1
             lock (hybridLock) sawMismatch = false;      // ⬅️ เพิ่ม
             string who = owner + (permission != "" ? $" ({permission})" : "");
             SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen, plate, who, detail);
+            try { barrier?.Open(); } catch { }
             WriteAccessLog("ALLOWED", detail, true);       // ผ่าน → เก็บภาพด้วย
             this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
         }
@@ -1096,6 +1129,7 @@ namespace SmartGateLPR1
 
             SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen,
                         dbPlate, who, "⚠️ ตรวจพบแท็ก RFID แต่ตรวจจับไม่พบป้ายทะเบียน");
+            try { barrier?.Open(); } catch { }
             WriteAccessLog("ALLOWED", "⚠️ ตรวจพบแท็ก RFID แต่ตรวจจับไม่พบป้ายทะเบียน", true);
             this.BeginInvoke(new Action(() => { timerGate.Interval = 3000; timerGate.Start(); }));
         }
@@ -1115,8 +1149,12 @@ namespace SmartGateLPR1
                 bool haveRfid = pendingRfidTag != "";
                 bool havePlate = pendingPlateCam[1] != "" || pendingPlateCam[2] != "";
 
-                // เคสA: มีบัตร ไม่มีป้าย ไม่เคยเจอป้ายผิด + ครบ 10 วิ → อนุญาต (รถไม่ติดป้าย)
-                if (haveRfid && !havePlate && !sawMismatch && allowNoPlate &&
+                // กล้องยังเห็นป้ายอยู่จริง ๆ หรือเพิ่งเห็นไปเมื่อครู่ = ไม่ใช่ "รถไม่ติดป้าย"
+                bool plateVisible = plateSeen[1] || plateSeen[2] ||
+                                    (DateTime.Now - lastPlateSeenAt).TotalSeconds < 3;
+
+                // เคสA: มีบัตร + กล้องไม่เห็นป้ายเลยจริง ๆ + ครบ 10 วิ → อนุญาต (รถไม่ติดป้าย)
+                if (haveRfid && !havePlate && !plateVisible && !sawMismatch && allowNoPlate &&
                     (DateTime.Now - pendingRfidTime).TotalSeconds >= noPlateGraceSec)
                 {
                     tagOnlyGrant = pendingRfidTag;
@@ -1131,14 +1169,14 @@ namespace SmartGateLPR1
                     gateBusy = true;
                     pendingRfidTag = "";
                 }
-                // เคสB: มีบัตร เคยเจอป้ายผิด วนอ่านซ้ำครบ 20 วิ → ปฏิเสธจริง
-                else if (haveRfid && sawMismatch &&
+                // เคสA3: มีบัตร + เห็นป้ายอยู่แต่อ่านไม่สำเร็จสักที จนครบเวลา → ปฏิเสธ
+                // (กันช่องโหว่: ป้ายผิดคันที่อ่านไม่นิ่ง จะหลุดไปเข้าเคส A แล้วได้ผ่านฟรี)
+                else if (haveRfid && !havePlate && plateVisible && !sawMismatch &&
                          (DateTime.Now - pendingRfidTime).TotalSeconds >= retryMaxSec)
                 {
-                    tagMismatchDeny = pendingRfidTag;
+                    noPlateDeny = true;
                     gateBusy = true;
                     pendingRfidTag = "";
-                    sawMismatch = false;
                 }
                 // เคสC: มีป้าย ไม่มีบัตร
                 else if (havePlate && !haveRfid)
@@ -1443,7 +1481,7 @@ namespace SmartGateLPR1
                                 latestPlateBox[camId] = new Rectangle(x1, y1, x2 - x1, y2 - y1);
                                 hasPlateBox[camId] = true;
                                 latestBoxTime[camId] = DateTime.Now;
-                                lock (hybridLock) plateSeen[camId] = true;
+                                lock (hybridLock) { plateSeen[camId] = true; lastPlateSeenAt = DateTime.Now; }
                                 UpdateLprZone(camId);
                                 // 🎯 เจอป้ายในเฟรม = จังหวะดีที่สุดที่จะอ่าน → สั่งอ่านเลย (แทน motion trigger)
                                 if (!isAIProcessing &&

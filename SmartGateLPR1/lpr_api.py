@@ -11,7 +11,6 @@ import numpy as np
 import torch
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
-from paddleocr import PaddleOCR
 
 # บังคับ stdout เป็น UTF-8 กันภาษาไทยเพี้ยนบน Windows
 try:
@@ -19,7 +18,11 @@ try:
 except Exception:
     pass
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    BASE_DIR = sys._MEIPASS                                  # ตอนรันเป็น .exe (PyInstaller)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))    # ตอนรันด้วย Python ปกติ
+
 PLATE_DETECTOR_PATH = os.path.join(BASE_DIR, "plate_detector.pt")
 CHAR_DETECTOR_PATH  = os.path.join(BASE_DIR, "char_detector.pt")
 # ========================= ค่าตั้งค่า =========================
@@ -71,7 +74,6 @@ app = Flask(__name__)
 
 # ---------- ตรวจจับอุปกรณ์อัตโนมัติ (GPU หรือ CPU) ----------
 USE_GPU = torch.cuda.is_available()
-PADDLE_DEVICE = "gpu:0" if USE_GPU else "cpu"
 YOLO_DEVICE = 0 if USE_GPU else "cpu"
 
 print("=" * 55)
@@ -87,24 +89,11 @@ detector = YOLO(PLATE_DETECTOR_PATH)
 print("⏳ กำลังโหลด YOLO อ่านตัวอักษร...")
 char_detector = YOLO(CHAR_DETECTOR_PATH)
 
-# ---------- โหลด PaddleOCR อ่านภาษาไทย ----------
-# ใช้ pipeline เต็ม (detection + recognition) แต่ทั้งหมดเป็นรุ่น mobile จึงเบา
-# ปิดโมดูลที่ไม่จำเป็นสำหรับป้ายทะเบียน (orientation/unwarping ของเอกสาร)
-print("⏳ กำลังโหลด PaddleOCR (th_PP-OCRv5_mobile_rec)...")
-ocr = PaddleOCR(
-    text_recognition_model_name="th_PP-OCRv5_mobile_rec",
-    use_doc_orientation_classify=False,
-    use_doc_unwarping=False,
-    use_textline_orientation=True,   # ช่วยเวลาป้ายเอียงเล็กน้อย
-    device=PADDLE_DEVICE,
-)
-
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
 print("🔥 กำลัง warm-up โมเดล...")
 try:
     _dummy = np.full((80, 240, 3), 255, dtype=np.uint8)
     detector(_dummy, verbose=False, device=YOLO_DEVICE)
-    ocr.predict(_dummy)
 except Exception as e:
     print(f"(warm-up เตือน: {e})")
 
@@ -112,11 +101,7 @@ print("✅ AI พร้อมทำงานแล้ว! สแตนด์บ�
 
 
 def _extract_lines(result):
-    """
-    แกะผลจาก PaddleOCR ให้เป็น list ของ (text, score, y_top)
-    เรียงจากบรรทัดบนลงล่าง  (บนสุด = เลขทะเบียน, ล่าง = จังหวัด)
-    เขียนแบบเผื่อ API เวอร์ชันต่างกัน (เข้าถึงได้ทั้งแบบ dict และ .json)
-    """
+    
     if not result:
         return []
     res = result[0]
