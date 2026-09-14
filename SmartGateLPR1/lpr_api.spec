@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('plate_detector.pt', '.'), ('char_detector.pt', '.'), ('thai_plate.py', '.')]
+datas = [('plate_detector.pt', '.'), ('thai_plate.py', '.')]
 binaries = []
 hiddenimports = ['thai_plate']
 tmp_ret = collect_all('paddleocr')

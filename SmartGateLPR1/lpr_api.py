@@ -26,7 +26,6 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))    # ตอนรันด้วย Python ปกติ
 
 PLATE_DETECTOR_PATH = os.path.join(BASE_DIR, "plate_detector.pt")
-CHAR_DETECTOR_PATH  = os.path.join(BASE_DIR, "char_detector.pt")
 # ========================= ค่าตั้งค่า =========================
 DETECT_CONF = 0.25                           # เกณฑ์ความมั่นใจขั้นต่ำของ YOLO
 # ขนาดภาพที่ป้อนให้ YOLO ตอนตรวจจับ  ตั้งทับได้ด้วย environment variable: LPR_IMGSZ
@@ -50,52 +49,8 @@ MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดท
 # เปิดได้โดยตั้ง environment variable: LPR_DEBUG_PLATE=1
 SAVE_DEBUG_PLATE = os.environ.get("LPR_DEBUG_PLATE", "0") == "1"
 # ============================================================
-CHAR_CONF = 0.25          # เกณฑ์ความมั่นใจของตัวอักษร (ใช้เฉพาะเครื่องอ่านแบบ yolo)
-
-# เลือกว่าจะอ่านตัวอักษรบนป้ายด้วยอะไร  ตั้งผ่าน environment variable: LPR_OCR_ENGINE
-#   paddle = PaddleOCR ภาษาไทย (ค่าเริ่มต้น)
-#   yolo   = โมเดล YOLO อ่านตัวอักษรทีละตัว (char_detector.pt) ของเดิม เอาไว้เทียบผล
-OCR_ENGINE = os.environ.get("LPR_OCR_ENGINE", "paddle").strip().lower()
 # โมเดลอ่านข้อความไทยของ PaddleOCR (ดาวน์โหลดเองอัตโนมัติครั้งแรกที่รัน)
 PADDLE_REC_MODEL = os.environ.get("LPR_PADDLE_REC", "th_PP-OCRv5_mobile_rec")
-
-CHAR_MAP = {
-    "A01": "ก", "A02": "ข", "A04": "ค", "A05": "ฅ", "A06": "ฆ",
-    "A07": "ง", "A08": "จ", "A09": "ฉ", "A10": "ช", "A12": "ฌ",
-    "A13": "ญ", "A14": "ฎ", "A16": "ฐ", "A18": "ฒ", "A19": "ณ",
-    "A20": "ด", "A21": "ต", "A22": "ถ", "A23": "ท", "A24": "ธ",
-    "A25": "น", "A26": "บ", "A28": "ผ", "A30": "พ", "A31": "ฟ",
-    "A32": "ภ", "A33": "ม", "A34": "ย", "A35": "ร", "A36": "ล",
-    "A37": "ว", "A38": "ศ", "A39": "ษ", "A40": "ส", "A41": "ห",
-    "A42": "ฬ", "A43": "อ", "A44": "ฮ",
-}
-
-PROVINCE_MAP = {
-    "BKK": "กรุงเทพมหานคร", "CMI": "เชียงใหม่", "CRI": "เชียงราย",
-    "NMA": "นครราชสีมา", "CBI": "ชลบุรี", "CCO": "ฉะเชิงเทรา",
-    "KKN": "ขอนแก่น", "PKT": "ภูเก็ต", "RYG": "ระยอง",
-    "NBI": "นนทบุรี", "PTE": "ปทุมธานี", "SPK": "สมุทรปราการ",
-    "NPT": "นครปฐม", "AYA": "พระนครศรีอยุธยา", "ATG": "อ่างทอง",
-    "ACR": "อำนาจเจริญ", "BKN": "บึงกาฬ", "BRM": "บุรีรัมย์",
-    "CNT": "ชัยนาท", "CPM": "ชัยภูมิ", "CPN": "ชุมพร", "CTI": "จันทบุรี",
-    "KBI": "กระบี่", "KPT": "กำแพงเพชร", "KRI": "กาญจนบุรี", "KSN": "กาฬสินธุ์",
-    "LEI": "เลย", "LPG": "ลำปาง", "LPN": "ลำพูน", "LRI": "ลพบุรี",
-    "MDH": "มุกดาหาร", "MKM": "มหาสารคาม", "MSN": "แม่ฮ่องสอน", "NAN": "น่าน",
-    "NBP": "หนองบัวลำภู", "NKI": "หนองคาย", "NPM": "นครพนม",
-    "NSN": "นครสวรรค์", "NST": "นครศรีธรรมราช", "NYK": "นครนายก",
-    "PBI": "เพชรบุรี", "PCT": "พิจิตร", "PKN": "ประจวบคีรีขันธ์",
-    "PLG": "พัทลุง", "PLK": "พิษณุโลก", "PNA": "พังงา", "PNB": "เพชรบูรณ์",
-    "PRE": "แพร่", "PRI": "ปราจีนบุรี", "PTN": "ปัตตานี", "PYO": "พะเยา",
-    "RBR": "ราชบุรี", "RET": "ร้อยเอ็ด", "RNG": "ระนอง",
-    "SKA": "สงขลา", "SKW": "สระแก้ว", "SSK": "ศรีสะเกษ", "SRN": "สุรินทร์",
-    "SPB": "สุพรรณบุรี", "SNI": "สุราษฎร์ธานี", "SNK": "สกลนคร",
-    "TAK": "ตาก", "TRG": "ตรัง", "TRT": "ตราด",
-    "UBN": "อุบลราชธานี", "UDN": "อุดรธานี", "UTI": "อุทัยธานี", "UTT": "อุตรดิตถ์",
-    "YLA": "ยะลา", "YST": "ยโสธร",
-    "SKM": "สมุทรสงคราม", "SKN": "สมุทรสาคร",   # ⚠️ ยังไม่ยืนยัน
-    "SRI": "สระบุรี", "SBR": "สิงห์บุรี",          # ⚠️ ยังไม่ยืนยัน
-    "STI": "สุโขทัย", "BTG": "?",                # ⚠️ ยังไม่ยืนยัน
-}
 
 app = Flask(__name__)
 
@@ -121,36 +76,26 @@ try:
 except Exception:
     pass
 
-# ---------- โหลดตัวอ่านตัวอักษรตามเครื่องที่เลือก ----------
-char_detector = None
-ocr = None
+# ---------- โหลด PaddleOCR อ่านตัวอักษรภาษาไทย ----------
+from paddleocr import PaddleOCR
 
-if OCR_ENGINE == "yolo":
-    print("⏳ กำลังโหลด YOLO อ่านตัวอักษร (char_detector.pt)...")
-    char_detector = YOLO(CHAR_DETECTOR_PATH)
-else:
-    OCR_ENGINE = "paddle"
-    from paddleocr import PaddleOCR
-    PADDLE_DEVICE = "gpu:0" if USE_GPU else "cpu"
-    print(f"⏳ กำลังโหลด PaddleOCR ภาษาไทย ({PADDLE_REC_MODEL})...")
-    # ปิดโมดูลที่ไว้จัดการเอกสาร (หมุนหน้า/ดัดกระดาษ) ป้ายทะเบียนไม่ต้องใช้ และทำให้ช้า
-    ocr = PaddleOCR(
-        text_recognition_model_name=PADDLE_REC_MODEL,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=True,   # ช่วยตอนป้ายเอียงเล็กน้อย
-        device=PADDLE_DEVICE,
-    )
-
-print(f"🔤 เครื่องอ่านตัวอักษร: {OCR_ENGINE}")
+PADDLE_DEVICE = "gpu:0" if USE_GPU else "cpu"
+print(f"⏳ กำลังโหลด PaddleOCR ภาษาไทย ({PADDLE_REC_MODEL})...")
+# ปิดโมดูลที่ไว้จัดการเอกสาร (หมุนหน้า/ดัดกระดาษ) ป้ายทะเบียนไม่ต้องใช้ และทำให้ช้า
+ocr = PaddleOCR(
+    text_recognition_model_name=PADDLE_REC_MODEL,
+    use_doc_orientation_classify=False,
+    use_doc_unwarping=False,
+    use_textline_orientation=True,   # ช่วยตอนป้ายเอียงเล็กน้อย
+    device=PADDLE_DEVICE,
+)
 
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
 print("🔥 กำลัง warm-up โมเดล...")
 try:
     _dummy = np.full((80, 240, 3), 255, dtype=np.uint8)
     detector(_dummy, verbose=False, device=YOLO_DEVICE)
-    if ocr is not None:
-        ocr.predict(_dummy)
+    ocr.predict(_dummy)
 except Exception as e:
     print(f"(warm-up เตือน: {e})")
 
@@ -280,49 +225,6 @@ def read_plate_paddle(plate_img):
     return plate_text, province, conf
 
 
-def read_plate_chars(plate_img):
-    """
-    รัน YOLO ตัวที่ 2 บน crop ป้าย -> อ่านตัวอักษรทีละตัว
-    คืน (เลขทะเบียน, จังหวัด, ความมั่นใจ)
-    """
-    res = char_detector(plate_img, conf=CHAR_CONF, verbose=False, device=YOLO_DEVICE)
-    boxes = res[0].boxes
-    if boxes is None or len(boxes) == 0:
-        return "", "", 0.0
-
-    names = char_detector.names
-    chars, provinces, scores = [], [], []
-
-    for i in range(len(boxes)):
-        cls_name = names[int(boxes.cls[i])]
-        conf = float(boxes.conf[i])
-        x_center = float(boxes.xywh[i][0])
-        scores.append(conf)
-
-        if cls_name in PROVINCE_MAP:
-            provinces.append((PROVINCE_MAP[cls_name], conf))
-        elif cls_name in CHAR_MAP:
-            chars.append((CHAR_MAP[cls_name], x_center))
-        elif cls_name.isdigit():
-            chars.append((cls_name, x_center))
-
-    chars.sort(key=lambda c: c[1])            # เรียงซ้าย -> ขวา
-    plate_text = "".join(c[0] for c in chars)
-
-    province = ""
-    if provinces:
-        province = max(provinces, key=lambda p: p[1])[0]   # เอาตัวที่มั่นใจสุด
-
-    avg_conf = sum(scores) / len(scores) if scores else 0.0
-    return plate_text, province, avg_conf
-
-
-def read_plate(plate_img):
-    """อ่านป้ายด้วยเครื่องอ่านที่เลือกไว้ (ดู OCR_ENGINE)"""
-    if OCR_ENGINE == "yolo":
-        return read_plate_chars(plate_img)
-    return read_plate_paddle(plate_img)
-
 @app.route("/detect", methods=["POST"])
 def detect():
     if "image" not in request.files:
@@ -382,7 +284,7 @@ def predict():
         if SAVE_DEBUG_PLATE:
             cv2.imwrite("debug_plate.jpg", plate)
 
-        plate_text, province, confidence = read_plate(plate)
+        plate_text, province, confidence = read_plate_paddle(plate)
         print(f"🔤 อ่านตัวอักษร: '{plate_text}' | จังหวัด: '{province}' | conf {confidence:.2f}")
 
         if not plate_text:

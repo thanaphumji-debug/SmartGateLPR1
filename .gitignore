@@ -366,10 +366,11 @@ FodyWeavers.xsd
 # ภาพ debug จาก lpr_api.py / make_fig.py
 debug_plate.jpg
 plate_deskewed.jpg
-# ผลลัพธ์จาก test_deskew.py / test_ocr_compare.py
+# ผลลัพธ์จาก test_deskew.py / test_ocr_accuracy.py
 test_deskew_output/
 test_deskew_result.csv
-test_ocr_compare.csv
+test_ocr_accuracy.csv
+
 # ฐานข้อมูลและภาพประวัติที่โปรแกรมสร้างตอนรัน
 smartgate.db
 settings.json
