@@ -68,6 +68,19 @@ namespace SmartGateLPR1
         private DateTime lprOwnerSince = DateTime.MinValue;
         private int lprOwnerMaxSec = 4;                // ถือนานเกินนี้ให้อีกตัวแย่งได้ กันค้าง
         private bool[] plateLocked = new bool[3];       // อ่านเลขได้แล้ว ค้างไว้ ไม่อ่านซ้ำ
+        // เวลาที่ล็อกเลขของแต่ละกล้อง — ใช้คู่กับ relockRecheckSec ด้านล่าง
+        private DateTime[] plateLockedAt = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+        // ล็อกแล้วอ่านซ้ำเพื่อ "ตรวจทาน" ทุกกี่วินาที
+        //
+        // เดิมล็อกแล้วคือหยุดอ่านถาวร จนกว่าจะครบรอบเปิด-ปิดไม้กั้น (ResetLprTurn)
+        // ซึ่งพังตอนป้ายในเฟรมเปลี่ยนเป็นคันใหม่โดยไม่มีรอบตัดสินคั่น เช่น เอาป้าย
+        // ใบที่ 2 มาเปลี่ยนแทนใบที่ 1 ตรงหน้ากล้อง — กล้องไม่เคย "มองไม่เห็นป้าย"
+        // เลยสักครั้ง ตัวนับพลาดจึงไม่ครบ ล็อกไม่ถูกปลด แล้วหน้าจอก็ค้างเลขใบแรก
+        // ไปตลอด  ตอนนี้ล็อกแค่ "พักการอ่าน" ชั่วคราว ครบเวลาแล้วอ่านทวนอีกครั้ง
+        // ถ้าเลขยังเดิมก็พักต่อ ถ้าเลขเปลี่ยน = คนละคัน เริ่มนับยืนยันใหม่ทันที
+        private double relockRecheckSec = 2.0;
+        // ป้ายหายจากเฟรมนานเกินกี่วินาที ถือว่ารถคันนั้นไปแล้ว ล้างผลที่ค้างไว้
+        private double plateGoneResetSec = 1.0;
         private string[] lastReadPlate = new string[] { "", "", "" };
         private int[] confirmCount = new int[3];
         // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะค้าง
@@ -1350,7 +1363,15 @@ namespace SmartGateLPR1
         {
             lock (turnLock)
             {
-                if (plateLocked[camId]) return false;            // กล้องนี้อ่านได้แล้ว ไม่ต้องอ่านซ้ำ
+                if (plateLocked[camId])
+                {
+                    // ยังไม่ถึงเวลาตรวจทาน → พักไว้ก่อน ไม่เปลืองรอบ OCR
+                    if ((DateTime.Now - plateLockedAt[camId]).TotalSeconds < relockRecheckSec)
+                        return false;
+                    // ถึงเวลาแล้ว → ปล่อยให้อ่านหนึ่งรอบ เช็คว่ายังเป็นป้ายเดิมอยู่ไหม
+                    // (เลื่อนเวลาไว้ก่อนเลย กันยิงซ้ำรัว ๆ ระหว่างรอผลรอบนี้)
+                    plateLockedAt[camId] = DateTime.Now;
+                }
                 if (lprOwner == camId) return true;              // ถืออยู่แล้ว
                 if (lprOwner == 0)
                 {
@@ -1384,20 +1405,33 @@ namespace SmartGateLPR1
 
         /// <summary>นับผลอ่าน คืน true เมื่อ "ยืนยันแล้ว" (อ่านได้เลขเดิมซ้ำครบตามกำหนด)
         /// ถ้ายังไม่ยืนยัน กล้องนี้จะถือคิวต่อ อ่านซ้ำจนกว่าจะชัวร์</summary>
-        private bool ReleaseLprTurn(int camId, string plateRead)
+        private bool ReleaseLprTurn(int camId, string plateRead, out bool plateChanged)
         {
+            plateChanged = false;
             lock (turnLock)
             {
                 bool confirmed = false;
 
                 if (IsPlausiblePlate(plateRead))
                 {
-                    if (plateRead == lastReadPlate[camId]) confirmCount[camId]++;
-                    else { lastReadPlate[camId] = plateRead; confirmCount[camId] = 1; }
+                    if (plateRead == lastReadPlate[camId])
+                    {
+                        confirmCount[camId]++;
+                    }
+                    else
+                    {
+                        // อ่านได้คนละเลขกับที่ค้างไว้ = คนละคัน/เปลี่ยนป้ายแล้ว
+                        // ทิ้งผลเก่าทั้งหมดแล้วเริ่มนับยืนยันของเลขใหม่
+                        plateChanged = lastReadPlate[camId] != "";
+                        lastReadPlate[camId] = plateRead;
+                        confirmCount[camId] = 1;
+                        plateLocked[camId] = false;
+                    }
 
                     if (confirmCount[camId] >= readsToConfirm)
                     {
                         plateLocked[camId] = true;
+                        plateLockedAt[camId] = DateTime.Now;
                         confirmed = true;
                     }
                 }
@@ -1417,6 +1451,21 @@ namespace SmartGateLPR1
                 plateLocked[1] = plateLocked[2] = false;
                 lastReadPlate[1] = lastReadPlate[2] = "";
                 confirmCount[1] = confirmCount[2] = 0;
+                plateLockedAt[1] = plateLockedAt[2] = DateTime.MinValue;
+            }
+        }
+
+        /// <summary>ล้างผลอ่านของกล้องเดียว — ใช้ตอนป้ายหายจากเฟรมนานพอจะถือว่ารถไปแล้ว
+        /// (อีกกล้องอาจยังจับรถของตัวเองอยู่ จึงห้ามไปล้างของมันด้วย)</summary>
+        private void ResetLprTurnCam(int camId)
+        {
+            lock (turnLock)
+            {
+                if (lprOwner == camId) lprOwner = 0;
+                plateLocked[camId] = false;
+                lastReadPlate[camId] = "";
+                confirmCount[camId] = 0;
+                plateLockedAt[camId] = DateTime.MinValue;
             }
         }
 
@@ -1476,7 +1525,14 @@ namespace SmartGateLPR1
                             string camName = camId == 1 ? "หน้า" : "หลัง";
 
                             // นับยืนยันก่อน — ส่งเข้าระบบตัดสินเฉพาะเลขที่ชัวร์แล้วเท่านั้น
-                            bool confirmed = ReleaseLprTurn(camId, plateText);
+                            bool confirmed = ReleaseLprTurn(camId, plateText, out bool plateChanged);
+                            // อ่านได้คนละเลขกับของเดิม = คันก่อนหน้าไปแล้ว ผลเก่าที่ค้าง
+                            // อยู่ในศูนย์ตัดสินใจใช้ไม่ได้อีกแล้ว ต้องล้างทันที ไม่งั้นถ้ามี
+                            // บัตรแตะเข้ามาตอนนี้ จะเอาเลขของคันก่อนไปเทียบกับบัตร
+                            if (plateChanged)
+                            {
+                                lock (hybridLock) pendingPlateCam[camId] = "";
+                            }
                             int seenTimes;
                             lock (turnLock) seenTimes = confirmCount[camId];
 
@@ -1538,7 +1594,7 @@ namespace SmartGateLPR1
             {
                 isAIProcessing = false; // ปลดล็อกคิวรับรูปใหม่
                 bitmap.Dispose();       // 💡 เคลียร์ขยะรูปนี้ออกจาก RAM ทันที
-                ReleaseLprTurn(camId, "");
+                ReleaseLprTurn(camId, "", out _);
             }
         }
 
@@ -1678,6 +1734,7 @@ namespace SmartGateLPR1
                                 missCount[camId]++;
                                 if (missCount[camId] >= missToLose)
                                 {
+                                    bool wasVisible = hasPlateBox[camId];
                                     hasPlateBox[camId] = false;
                                     lock (hybridLock) plateSeen[camId] = false;
                                     // มองไม่เห็นป้ายแล้ว → ถ้ายังถือคิวอยู่และยังไม่ยืนยัน ให้ปล่อยคิวทันที กันอีกกล้องรอเก้อ
@@ -1685,7 +1742,22 @@ namespace SmartGateLPR1
                                     {
                                         if (lprOwner == camId && !plateLocked[camId]) lprOwner = 0;
                                     }
-                                    UpdateLprZone(camId);
+                                    if (wasVisible) UpdateLprZone(camId);
+
+                                    // ป้ายหายไปนานพอแล้ว = รถคันนั้นไปแล้ว ล้างเลขที่ค้างไว้ทิ้ง
+                                    // ไม่งั้นคันถัดไปเข้ามา หน้าจอจะยังโชว์เลขของคันก่อนอยู่
+                                    // (เดิมล้างตรงนี้ไม่ได้เลย ต้องรอครบรอบเปิด-ปิดไม้กั้นเท่านั้น)
+                                    if ((DateTime.Now - latestBoxTime[camId]).TotalSeconds >= plateGoneResetSec)
+                                    {
+                                        bool hadResult;
+                                        lock (turnLock) hadResult = lastReadPlate[camId] != "";
+                                        if (hadResult)
+                                        {
+                                            ResetLprTurnCam(camId);
+                                            latestPlateText[camId] = "";
+                                            SetPlateText(camId, "-");
+                                        }
+                                    }
                                 }
                             }
 
@@ -1752,7 +1824,9 @@ namespace SmartGateLPR1
         private void SetPlateText(int camId, string text)
         {
             var lbl = PlateLabel(camId);
-            Action apply = () => { lbl.Text = text; lbl.ForeColor = Color.Green; };
+            // "-" คือสถานะยังไม่มีผล (ป้ายหายจากเฟรม) ใช้สีเทาให้ต่างจากเลขที่อ่านได้จริง
+            Color color = (text == "-" || string.IsNullOrWhiteSpace(text)) ? Color.Gray : Color.Green;
+            Action apply = () => { lbl.Text = text; lbl.ForeColor = color; };
             if (lbl.InvokeRequired) lbl.BeginInvoke(apply);
             else apply();
         }
