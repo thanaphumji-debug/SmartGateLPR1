@@ -79,8 +79,16 @@ namespace SmartGateLPR1
         private DateTime[] lastDetectTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private bool[] isDetecting = new bool[3];
         private readonly object boxLock = new object();
-        private int detectIntervalMs = 66;
-        private int boxHoldMs = 350;
+        // ยิง /detect ถี่แค่ไหน (ต่อกล้อง) — ค่าเดิม 66ms = 15 ครั้ง/วินาที/กล้อง
+        // รวม 2 กล้อง = 30 ครั้ง/วินาที ซึ่งเกินกำลังเครื่องมาก (วัดจริงแล้ว /detect
+        // ใช้เวลา ~0.2 วินาที/ครั้ง → ต้องการเวลาประมวลผล 6 วินาที ต่อเวลาจริง 1 วินาที)
+        // งานตรวจจับจึงยึดโมเดลไว้ตลอดจนงานอ่านตัวอักษรไม่ได้รัน = เห็นกรอบแต่
+        // ตัวอักษรไม่ขึ้น  200ms (5 ครั้ง/วินาที) ลื่นพอสำหรับรถที่ค่อย ๆ เข้ามาจอด
+        private int detectIntervalMs = 200;
+        // กรอบค้างบนจอได้นานแค่ไหนหลังผลตรวจจับล่าสุด — ต้องยาวกว่าช่วงที่ /detect
+        // หยุดหลบให้ /predict (อ่านป้ายใช้เวลา ~2 วินาที) ไม่งั้นกรอบจะหายวับ
+        // ระหว่างกำลังอ่านป้าย แล้วโผล่กลับมาใหม่ ดูเหมือนกระพริบ
+        private int boxHoldMs = 2500;
         // ใช้ HttpClient ตัวเดียวร่วมกัน (สร้างใหม่ทุกครั้งทำให้ช้าและซ็อกเก็ตเต็ม)
         private static readonly HttpClient httpDetect = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         private static readonly HttpClient httpPredict = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
@@ -1546,6 +1554,12 @@ namespace SmartGateLPR1
                         var response = await client.PostAsync("http://localhost:5000/detect", content);
                         var json = await response.Content.ReadAsStringAsync();
                         dynamic result = JsonConvert.DeserializeObject(json);
+
+                        // ฝั่ง AI กำลังอ่านตัวอักษรอยู่ จึงยังไม่ได้ตรวจกรอบให้เฟรมนี้
+                        // → ข้ามไปเฉย ๆ ห้ามตกไปที่ else ด้านล่าง ไม่งั้นจะไปล้าง
+                        // hasPlateBox/plateSeen ทิ้ง ทำให้กรอบกระพริบและคิวอ่าน
+                        // (lprOwner) หลุดกลางคันทั้งที่ป้ายยังอยู่ในเฟรม
+                        if (result != null && result.status == "busy") return;
 
                         lock (boxLock)
                         {

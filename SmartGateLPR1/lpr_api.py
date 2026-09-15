@@ -2,6 +2,22 @@
 import os
 import threading
 model_lock = threading.RLock()
+
+# ---------- ให้สิทธิ์ /predict (อ่านตัวอักษร) มาก่อน /detect (กรอบโชว์บนจอ) ----------
+# ฝั่ง C# ยิง /detect ถี่มากเพื่ออัปเดตกรอบแดงให้ลื่น (ทุก ๆ ไม่กี่สิบ ms ต่อกล้อง)
+# ซึ่งรวมกันแล้วเกินกำลังที่เครื่องประมวลผลทัน งานตรวจจับจึงยึด model_lock ไว้
+# แทบตลอดเวลา พอ /predict เข้ามาขอ lock (ต้องขอหลายรอบ: YOLO + OCR) เลยโดนแย่ง
+# จนอดตาย (RLock ของ Python ไม่มีคิวที่เป็นธรรม) สุดท้ายฝั่ง C# timeout
+# → เห็นกรอบป้ายแต่ตัวอักษรไม่เคยขึ้น
+#
+# แก้โดยให้ /detect "หลบทาง" ทันทีถ้ามีงานอ่านป้ายค้างอยู่ ไม่ต้องไปแย่ง lock เลย
+_predict_pending = 0
+_predict_lock = threading.Lock()
+
+
+def _predict_busy():
+    with _predict_lock:
+        return _predict_pending > 0
 import io
 import time
 import sys
@@ -299,23 +315,42 @@ def read_plate_paddle(plate_img, return_raw=False):
 def detect():
     if "image" not in request.files:
         return jsonify({"status": "error", "message": "ไม่พบรูป"})
+
+    # มีงานอ่านป้ายค้างอยู่ → คืนค่าทันทีโดยไม่แตะโมเดลเลย ปล่อยให้ /predict
+    # ได้ใช้เครื่องเต็มที่  ฝั่ง C# เห็น status นี้แล้วจะข้ามเฟรมไปเฉย ๆ
+    # (ต้องไม่ใช่ "error" เพราะฝั่งนั้นจะไปล้างสถานะกรอบทิ้ง)
+    if _predict_busy():
+        return jsonify({"status": "busy"})
+
     try:
         file_bytes = np.frombuffer(request.files["image"].read(), np.uint8)
         frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         box = detect_best_plate(frame)
+        # ไม่พิมพ์ log ทุกครั้งที่เรียก — endpoint นี้ถูกยิงหลายครั้งต่อวินาทีต่อกล้อง
+        # การเขียน console บน Windows ช้ากว่าที่คิด (บล็อกจริง) และทำให้ log จมจน
+        # หา error ที่สำคัญไม่เจอ  เปิดดูได้ด้วย LPR_DEBUG_PLATE=1 ถ้าต้องการ
         if box is None:
-            print("🔍 /detect: ไม่เจอป้าย")          # <-- เพิ่ม
+            if SAVE_DEBUG_PLATE:
+                print("🔍 /detect: ไม่เจอป้าย")
             return jsonify({"status": "error", "message": "ไม่พบป้าย"})
-        print(f"🟥 /detect: เจอป้าย box={box}")       # <-- เพิ่ม
+        if SAVE_DEBUG_PLATE:
+            print(f"🟥 /detect: เจอป้าย box={box}")
         return jsonify({"status": "success", "box": box})
     except Exception as e:
-        print(f"❌ /detect error: {e}")               # <-- เพิ่ม
+        print(f"❌ /detect error: {e}")     # error ยังพิมพ์เสมอ ไม่ควรเงียบหาย
         return jsonify({"status": "error", "message": str(e)})
 
 @app.route("/predict", methods=["POST"])
 def predict():
     if "image" not in request.files:
         return jsonify({"status": "error", "message": "ไม่พบไฟล์รูปภาพ"})
+
+    # ประกาศตัวว่ากำลังจะอ่านป้าย เพื่อให้ /detect หลบทางให้ (ดู _predict_busy)
+    # ต้องนับตั้งแต่ "ก่อน" เริ่มทำงานจริง และคืนค่าใน finally เสมอ ไม่งั้นถ้า
+    # หลุด exception ตัวนับจะค้าง แล้ว /detect จะหลบทางตลอดกาล = กรอบไม่ขึ้นเลย
+    global _predict_pending
+    with _predict_lock:
+        _predict_pending += 1
 
     try:
         t0 = time.time()
@@ -402,6 +437,12 @@ def predict():
     except Exception as e:
         print(f"❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)})
+
+    finally:
+        # ต้องลดตัวนับเสมอ ไม่ว่าจะจบทางไหน (สำเร็จ / return กลางทาง / exception)
+        # ไม่งั้น /detect จะหลบทางค้างตลอดกาล แล้วกรอบจะไม่ขึ้นอีกเลย
+        with _predict_lock:
+            _predict_pending -= 1
 
 
 if __name__ == "__main__":
