@@ -173,6 +173,16 @@ ocr = PaddleOCR(
     use_doc_unwarping=False,
     use_textline_orientation=True,   # ช่วยตอนป้ายเอียงเล็กน้อย
     device=PADDLE_DEVICE,
+    # ปิด mkldnn (oneDNN) — ค่าเริ่มต้นของ PaddleOCR บน CPU เปิดไว้ (enable_mkldnn=True)
+    # แต่ชนกับบั๊กความเข้ากันไม่ได้ของ Paddle PIR (executor รุ่นใหม่) กับ oneDNN
+    # ในบางโมเดล ทำให้พังตอนรันจริงด้วย error:
+    #   (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
+    #   [pir::ArrayAttribute<pir::DoubleAttribute>]
+    #   (at ...onednn_instruction.cc:118)
+    # ปิดไปเลยจะช้าลงเล็กน้อย (mkldnn ช่วยเร่งความเร็วบน CPU) แต่รันได้เสถียรกว่า
+    # ยังปรับเปิดกลับได้ด้วย LPR_ENABLE_MKLDNN=1 ถ้าใช้เวอร์ชัน paddlepaddle
+    # ที่แก้บั๊กนี้แล้วในอนาคต
+    enable_mkldnn=os.environ.get("LPR_ENABLE_MKLDNN", "0") == "1",
     # ปล่อย text_det_limit_* ไว้ที่ค่าเริ่มต้น (limit_type="max", 960px) —
     # ลองสลับเป็น "min" มาก่อนแล้วแต่ขยายภาพใหญ่ (เช่นภาพเต็มเฟรมตอน fallback)
     # แบบไม่จำกัดจนช้าลง 5 เท่า และขยายภาพ crop เล็ก ๆ 6 เท่าแบบไม่ควบคุม
