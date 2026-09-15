@@ -113,11 +113,20 @@ namespace SmartGateLPR1
         private double plateGoneResetSec = 1.0;
         private string[] lastReadPlate = new string[] { "", "", "" };
         private int[] confirmCount = new int[3];
-        // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะค้าง
-        // ลดจาก 3 เหลือ 2: การยืนยันซ้ำแต่ละรอบต้องรอ /predict อีกหนึ่งรอบ (~0.3-0.5 วิ)
-        // รอบที่ 3 แทบไม่เคยเปลี่ยนคำตอบจากรอบที่ 2 แต่ถ่วงเวลาตัดสินใจทุกคัน
-        // ตั้ง 1 ได้ถ้าอยากตัดการยืนยันซ้ำทิ้งเลย (เร็วสุด แต่พลาดง่ายขึ้น)
-        private int readsToConfirm = 2;
+        // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะส่งให้ศูนย์ตัดสินใจ
+        //
+        // เดิมบังคับ 2 รอบเสมอ (ก่อนหน้านั้น 3) ซึ่งเสียเวลารอ /predict อีกรอบเต็ม
+        // กับทุกคัน ทั้งที่ส่วนใหญ่รอบแรก OCR ก็มั่นใจเต็มที่อยู่แล้ว
+        //
+        // ตอนนี้ใช้ "ความมั่นใจ" แทน "จำนวนรอบ":
+        //   conf >= submitConfMin  -> ส่งเลยรอบเดียว (เคสปกติ เร็วสุด)
+        //   conf <  submitConfMin  -> ขออ่านซ้ำให้ได้เลขเดิมอีกครั้งก่อน (เหมือนเดิม)
+        // คุณภาพไม่ได้ลดลง เพราะรอบที่สองมีไว้กันผลที่ไม่น่าเชื่อถืออยู่แล้ว
+        // ผลที่ OCR ให้คะแนนสูงมากก็ไม่มีอะไรต้องกันเพิ่ม
+        private int readsToConfirm = 1;          // จำนวนรอบขั้นต่ำเมื่อ conf ถึงเกณฑ์
+        private int readsToConfirmLowConf = 2;   // จำนวนรอบเมื่อ conf ต่ำกว่าเกณฑ์
+        private double submitConfMin = 0.90;     // คะแนน OCR ที่ถือว่า "มั่นใจพอจะส่งเลย"
+        private int[] neededReads = new int[] { 1, 1, 1 };   // ใช้โชว์บนหน้าจอเท่านั้น
 
         // กันแท็กเดิมวนกระตุ้นซ้ำหลังตัดสินไปแล้ว
         private string lastDecidedTag = "";
@@ -996,7 +1005,7 @@ namespace SmartGateLPR1
                 if (!busy) return false;                     // ไม่เจอป้าย ไม่ได้อ่านอะไรอยู่ → ตัดสินเลย
 
                 waitReason = isReading[other] || confirmCount[other] > 0
-                    ? $"กล้อง{otherName}กำลังอ่านเลขอยู่ ({confirmCount[other]}/{readsToConfirm}) — รอให้เสร็จก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)"
+                    ? $"กล้อง{otherName}กำลังอ่านเลขอยู่ ({confirmCount[other]}/{neededReads[other]}) — รอให้เสร็จก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)"
                     : $"กล้อง{otherName}เห็นป้ายแล้ว กำลังจะอ่าน — รอก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)";
                 return true;
             }
@@ -1557,7 +1566,10 @@ namespace SmartGateLPR1
                         bestConf[camId] = conf;
                     }
 
-                    if (confirmCount[camId] >= readsToConfirm)
+                    // มั่นใจพอไหม — ใช้คะแนนที่ดีที่สุดของเลขนี้ตัดสินว่าต้องอ่านกี่รอบ
+                    int need = bestConf[camId] >= submitConfMin ? readsToConfirm : readsToConfirmLowConf;
+                    neededReads[camId] = need;
+                    if (confirmCount[camId] >= need)
                     {
                         plateLocked[camId] = true;
                         plateLockedAt[camId] = DateTime.Now;
@@ -1586,6 +1598,7 @@ namespace SmartGateLPR1
                 lastReadPlate[1] = lastReadPlate[2] = "";
                 confirmCount[1] = confirmCount[2] = 0;
                 plateLockedAt[1] = plateLockedAt[2] = DateTime.MinValue;
+                neededReads[1] = neededReads[2] = readsToConfirm;
                 plateSubmitted[1] = plateSubmitted[2] = false;
                 plateSubmittedAt[1] = plateSubmittedAt[2] = DateTime.MinValue;
                 bestConf[1] = bestConf[2] = 0;
@@ -1603,6 +1616,7 @@ namespace SmartGateLPR1
                 lastReadPlate[camId] = "";
                 confirmCount[camId] = 0;
                 plateLockedAt[camId] = DateTime.MinValue;
+                neededReads[camId] = readsToConfirm;
                 plateSubmitted[camId] = false;
                 plateSubmittedAt[camId] = DateTime.MinValue;
                 bestConf[camId] = 0;
@@ -1650,6 +1664,24 @@ namespace SmartGateLPR1
                         SetLprStatus(camId, "⏳ กำลังประมวลผล...", Color.Blue);
                         content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
 
+                        // ส่งกรอบที่ /detect เพิ่งหาเจอไปด้วย ฝั่ง AI จะได้ไม่ต้องค้น
+                        // ทั้งเฟรมใหม่ (imgsz=1280 + TTA ~330ms) แค่ค้นซ้ำรอบ ๆ กรอบนั้น
+                        // (~23ms) วัดแล้วเร็วขึ้น 14 เท่าโดย conf แทบไม่ต่าง (0.826 vs 0.845)
+                        Rectangle hintBox;
+                        bool haveHint;
+                        lock (boxLock)
+                        {
+                            haveHint = hasPlateBox[camId];
+                            hintBox = latestPlateBox[camId];
+                        }
+                        if (haveHint && hintBox.Width > 0 && hintBox.Height > 0)
+                        {
+                            content.Add(new StringContent(hintBox.Left.ToString()), "bx1");
+                            content.Add(new StringContent(hintBox.Top.ToString()), "by1");
+                            content.Add(new StringContent(hintBox.Right.ToString()), "bx2");
+                            content.Add(new StringContent(hintBox.Bottom.ToString()), "by2");
+                        }
+
                         // ยิงไปที่ Python API
                         var response = await client.PostAsync("http://localhost:5000/predict", content).ConfigureAwait(false);
                         var jsonResponse = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -1666,6 +1698,7 @@ namespace SmartGateLPR1
                             string camName = camId == 1 ? "หน้า" : "หลัง";
                             double conf = 0;
                             try { if (result.confidence != null) conf = (double)result.confidence; } catch { }
+                            Console.WriteLine($"[predict] กล้อง{camId} อ่านได้ '{plateText}' conf {conf:F3}");
 
                             // นับยืนยันก่อน — ส่งเข้าระบบตัดสินเฉพาะเลขที่ชัวร์แล้วเท่านั้น
                             bool confirmed = ReleaseLprTurn(camId, plateText, conf, out bool plateChanged);
@@ -1676,7 +1709,7 @@ namespace SmartGateLPR1
                             {
                                 lock (hybridLock) { pendingPlateCam[camId] = ""; pendingPlateConf[camId] = 0; }
                             }
-                            int seenTimes;
+                            int seenTimes, needReads;
                             double sendConf;
                             // ยืนยันแล้วให้ "ส่งครั้งเดียว" — ตั้งธงตรงนี้ใต้ล็อกเดียวกับที่อ่านค่า
                             // กันกรณีสองรอบอ่านจบพร้อมกันแล้วส่งซ้ำ
@@ -1684,6 +1717,7 @@ namespace SmartGateLPR1
                             lock (turnLock)
                             {
                                 seenTimes = confirmCount[camId];
+                                needReads = neededReads[camId];
                                 sendConf = bestConf[camId];
                                 if (confirmed && !plateSubmitted[camId])
                                 {
@@ -1698,7 +1732,10 @@ namespace SmartGateLPR1
                                 SetPlateText(camId, plateText);
                                 if (submitNow)
                                 {
-                                    SetLprStatus(camId, $"✅ ตรวจสอบสำเร็จ — ส่งให้ระบบตัดสินแล้ว (กล้อง{camName})",
+                                    // โชว์ conf ด้วย จะได้เห็นว่าค่าจริงจากกล้องนี้อยู่ราวไหน
+                                    // (ใช้เทียบกับ submitConfMin ตอนจูนค่า)
+                                    SetLprStatus(camId,
+                                                 $"✅ ตรวจสอบสำเร็จ — ส่งให้ระบบตัดสินแล้ว (กล้อง{camName}, conf {sendConf:F2})",
                                                  Color.Green);
                                     OnPlateRead(plateText, camId, sendConf);
                                 }
@@ -1708,7 +1745,7 @@ namespace SmartGateLPR1
                                 }
                                 else
                                 {
-                                    SetLprStatus(camId, $"🔎 กำลังยืนยัน {seenTimes}/{readsToConfirm} (กล้อง{camName})",
+                                    SetLprStatus(camId, $"🔎 ยังไม่มั่นใจพอ อ่านซ้ำ {seenTimes}/{needReads} (กล้อง{camName})",
                                                  Color.DarkOrange);
                                 }
                             });
