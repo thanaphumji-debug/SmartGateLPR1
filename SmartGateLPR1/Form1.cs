@@ -86,14 +86,24 @@ namespace SmartGateLPR1
         // → ต้องการเวลาประมวลผล ~6 วินาที ต่อเวลาจริง 1 วินาที งานตรวจจับจึงยึดโมเดล
         // ไว้ตลอดจนงานอ่านตัวอักษรไม่ได้รันเลย
         //
-        // ตอนนี้ฝั่ง AI สลับความละเอียดเองตามสถานะ (ดูฟิลด์ tracking ใน DetectBox)
-        // พอเกาะติดป้ายได้แล้วจะเหลือ ~0.06 วินาที/ครั้ง จึงยิงถี่ขึ้นได้ในงบเท่าเดิม
-        // 100ms = 10 ครั้ง/วินาที/กล้อง กรอบตามป้ายลื่นขึ้นเท่าตัวจาก 200ms
-        private int detectIntervalMs = 100;
+        // ค่านี้ใช้ตอน "ยังค้นหาป้าย" (ไม่มีรถ) ซึ่งฝั่ง AI ต้องค้นทั้งเฟรมด้วย
+        // ความละเอียดเต็ม ~185ms/ครั้ง จึงไม่ควรยิงถี่เกินไป ไม่งั้นเผาซีพียูทิ้ง
+        // ตอนไม่มีอะไรเข้ามา  ตอนเกาะติดป้ายแล้วจะใช้ trackIntervalMs แทน
+        private int detectIntervalMs = 150;
+        // ตอนเกาะติดป้ายอยู่แล้วให้ยิงถี่กว่าปกติ เพราะฝั่ง AI ค้นเฉพาะรอบกรอบเดิม
+        // (ROI) ซึ่งใช้เวลาแค่ ~20ms เทียบกับค้นทั้งเฟรม ~185ms จึงยิงถี่ได้สบาย ๆ
+        // กรอบจะเกาะตามป้ายลื่นขึ้นมาก  ส่วนตอนยังค้นหา (ไม่มีรถ) ใช้ค่าปกติ
+        // จะได้ไม่เผาซีพียูทิ้งตอนไม่มีอะไรเข้ามา
+        private int trackIntervalMs = 40;
+        // ตัวนับว่าตรวจไม่เจอป้ายติดกันกี่ครั้งแล้ว (แยกตามกล้อง)
+        private int[] missCount = new int[3];
+        // ต้องพลาดติดกันกี่ครั้งถึงจะยอมดับกรอบ — กันกรอบกระพริบเวลา YOLO พลาด
+        // เฟรมสองเฟรมเพราะภาพเบลอ/มุมเอียง ที่ 40ms ต่อครั้ง 8 ครั้ง = ~0.3 วินาที
+        private int missToLose = 8;
         // กรอบค้างบนจอได้นานแค่ไหนหลังผลตรวจจับล่าสุด — ต้องยาวกว่าช่วงที่ /detect
         // หยุดหลบให้ /predict (อ่านป้ายใช้เวลา ~2 วินาที) ไม่งั้นกรอบจะหายวับ
         // ระหว่างกำลังอ่านป้าย แล้วโผล่กลับมาใหม่ ดูเหมือนกระพริบ
-        private int boxHoldMs = 2500;
+        private int boxHoldMs = 4000;
         // ใช้ HttpClient ตัวเดียวร่วมกัน (สร้างใหม่ทุกครั้งทำให้ช้าและซ็อกเก็ตเต็ม)
         private static readonly HttpClient httpDetect = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         private static readonly HttpClient httpPredict = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
@@ -502,12 +512,16 @@ namespace SmartGateLPR1
                             displayBox.Image = displayImage;
                         }));
 
-                        // --- 1.5 อัปเดตกรอบแดงให้ตามป้าย: เรียก /detect ทุก ~detectIntervalMs ---
-                        int myInterval = detectIntervalMs;
+                        // --- 1.5 อัปเดตกรอบแดงให้ตามป้าย: เรียก /detect เป็นระยะ ---
+                        // กำลังเกาะติดป้ายอยู่ → ยิงถี่กว่าปกติได้ เพราะฝั่ง AI ค้นเฉพาะ
+                        // รอบกรอบเดิม (ROI) ซึ่งเร็วกว่าค้นทั้งเฟรมหลายเท่า กรอบจะตามลื่น
+                        bool nowTracking;
+                        lock (boxLock) nowTracking = hasPlateBox[camId];
+                        int myInterval = nowTracking ? trackIntervalMs : detectIntervalMs;
                         lock (turnLock)
                         {
                             // อีกกล้องกำลังอ่านเลขอยู่ → กล้องนี้ลดความถี่ลง คืน GPU ให้ตัวที่กำลังทำงาน
-                            if (lprOwner != 0 && lprOwner != camId) myInterval = detectIntervalMs * 3;
+                            if (lprOwner != 0 && lprOwner != camId) myInterval *= 3;
                         }
                         if (!isDetecting[camId] &&
                             (DateTime.Now - lastDetectTimes[camId]).TotalMilliseconds >= myInterval)
@@ -1560,13 +1574,25 @@ namespace SmartGateLPR1
                         //   เกาะติดอยู่ -> ฝั่งนั้นใช้ความละเอียดต่ำลง เร็วขึ้น ~3 เท่า
                         //                  กรอบจึงตามป้ายได้ลื่นขึ้นมาก
                         //   ยังไม่เจอ   -> ใช้ความละเอียดเต็ม จับรถที่เพิ่งเข้ามาไกล ๆ ให้ไวที่สุด
-                        bool tracking;
+                        bool tracking; Rectangle lastBox = Rectangle.Empty;
                         lock (boxLock)
                         {
                             tracking = hasPlateBox[camId] &&
                                        (DateTime.Now - latestBoxTime[camId]).TotalMilliseconds < 1000;
+                            if (tracking) lastBox = latestPlateBox[camId];
                         }
                         content.Add(new StringContent(tracking ? "1" : "0"), "tracking");
+
+                        // ส่งกรอบจากเฟรมก่อนหน้าไปด้วย ฝั่ง AI จะได้ค้นเฉพาะบริเวณรอบ ๆ
+                        // กรอบนั้นแทนที่จะค้นทั้งเฟรม (เร็วกว่า ~4 เท่า) ถ้าหาไม่เจอ
+                        // ในบริเวณนั้น ฝั่งนั้นจะถอยไปค้นทั้งเฟรมให้เอง
+                        if (tracking && lastBox.Width > 0 && lastBox.Height > 0)
+                        {
+                            content.Add(new StringContent(lastBox.Left.ToString()), "bx1");
+                            content.Add(new StringContent(lastBox.Top.ToString()), "by1");
+                            content.Add(new StringContent(lastBox.Right.ToString()), "bx2");
+                            content.Add(new StringContent(lastBox.Bottom.ToString()), "by2");
+                        }
 
                         var response = await client.PostAsync("http://localhost:5000/detect", content);
                         var json = await response.Content.ReadAsStringAsync();
@@ -1587,6 +1613,7 @@ namespace SmartGateLPR1
                                 latestPlateBox[camId] = new Rectangle(x1, y1, x2 - x1, y2 - y1);
                                 hasPlateBox[camId] = true;
                                 latestBoxTime[camId] = DateTime.Now;
+                                missCount[camId] = 0;      // เจอแล้ว เริ่มนับพลาดใหม่
                                 lock (hybridLock) { plateSeen[camId] = true; lastPlateSeenAt = DateTime.Now; }
                                 UpdateLprZone(camId);
                                 // 🎯 เจอป้ายในเฟรม = จังหวะดีที่สุดที่จะอ่าน → สั่งอ่านเลย (แทน motion trigger)
@@ -1600,14 +1627,22 @@ namespace SmartGateLPR1
                             }
                             else
                             {
-                                hasPlateBox[camId] = false;
-                                lock (hybridLock) plateSeen[camId] = false;    // ⬅️ เพิ่ม
-                                // มองไม่เห็นป้ายแล้ว → ถ้ายังถือคิวอยู่และยังไม่ยืนยัน ให้ปล่อยคิวทันที กันอีกกล้องรอเก้อ
-                                lock (turnLock)
+                                // อย่าเพิ่งดับกรอบเพราะพลาดครั้งเดียว! ป้ายจริงยังอยู่ตรงนั้น
+                                // แค่เฟรมนั้นเบลอ/มุมเอียง/แสงแวบ ทำให้ YOLO พลาดชั่วคราว
+                                // ถ้าดับทันทีกรอบจะกระพริบติด ๆ ดับ ๆ ตลอดเวลา
+                                // ต้องพลาดติดกันครบ missToLose ครั้งก่อน ถึงจะถือว่าป้ายหายจริง
+                                missCount[camId]++;
+                                if (missCount[camId] >= missToLose)
                                 {
-                                    if (lprOwner == camId && !plateLocked[camId]) lprOwner = 0;
+                                    hasPlateBox[camId] = false;
+                                    lock (hybridLock) plateSeen[camId] = false;
+                                    // มองไม่เห็นป้ายแล้ว → ถ้ายังถือคิวอยู่และยังไม่ยืนยัน ให้ปล่อยคิวทันที กันอีกกล้องรอเก้อ
+                                    lock (turnLock)
+                                    {
+                                        if (lprOwner == camId && !plateLocked[camId]) lprOwner = 0;
+                                    }
+                                    UpdateLprZone(camId);
                                 }
-                                UpdateLprZone(camId);
                             }
 
                         }

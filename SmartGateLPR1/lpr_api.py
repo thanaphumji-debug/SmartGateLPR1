@@ -81,6 +81,25 @@ DETECT_IMGSZ = int(os.environ.get("LPR_IMGSZ", "1280"))
 # เสียแค่ความไวตอนป้ายเล็กมาก ซึ่งไม่สำคัญในโหมดเกาะติด เพราะกว่าจะถึงโหมดนี้
 # ก็เจอป้ายไปแล้ว
 TRACK_IMGSZ = int(os.environ.get("LPR_TRACK_IMGSZ", "960"))
+
+# ---------- โหมดเกาะติดแบบค้นเฉพาะรอบกรอบเดิม (ROI) ----------
+# เร็วที่สุด: แทนที่จะค้นทั้งเฟรมทุกครั้ง ถ้ารู้อยู่แล้วว่าเฟรมก่อนหน้าป้ายอยู่ตรงไหน
+# ก็ครอปเฉพาะบริเวณนั้นมาค้น ภาพที่ป้อนเข้าโมเดลเล็กลงมาก จึงเร็วขึ้นหลายเท่า
+#
+# วัดจริงบนเฟรม 1280x720 ป้ายกว้าง 64px (ขนาดเท่ารถจอดหน้าไม้กั้น):
+#
+#   วิธี                        เวลา/ครั้ง   ครั้ง/วินาที   conf
+#   ค้นทั้งเฟรม imgsz=960          69.5 ms      14.4       0.818
+#   ROI imgsz=640                  36.1 ms      27.7       0.867
+#   ROI imgsz=416                  22.9 ms      43.7       0.822
+#   ROI imgsz=320                  15.8 ms      63.3       0.826
+#
+# conf ไม่ได้ลดลงเลย กลับดีขึ้นด้วยซ้ำ เพราะป้ายกินพื้นที่ในภาพที่ป้อนเข้าโมเดล
+# มากกว่าเดิมมาก (ต่างจากการลด imgsz ทั้งเฟรม ซึ่งทำให้ป้ายเล็กลงตามไปด้วย)
+ROI_IMGSZ = int(os.environ.get("LPR_ROI_IMGSZ", "416"))
+# ขยายขอบเขตการค้นออกจากกรอบเดิมกี่เท่าของขนาดกรอบ (เผื่อรถขยับระหว่างเฟรม)
+# 1.0 = ค้นครอบคลุมพื้นที่ 3x3 เท่าของกรอบเดิม ซึ่งเผื่อการขยับไว้เยอะพอ
+ROI_MARGIN = float(os.environ.get("LPR_ROI_MARGIN", "1.0"))
 CROP_PADDING = 12                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
 # สัดส่วนกว้าง/สูงขั้นต่ำของกรอบที่ถือว่า "น่าจะเป็นป้ายจริง"
 # ป้ายไทยจริงกว้างกว่าสูงชัดเจน วัดจากภาพทดสอบได้ ~1.6 เท่าขึ้นไป
@@ -220,6 +239,40 @@ def detect_best_plate(frame, imgsz=None):
     x1, y1, x2, y2 = map(int, boxes.xyxy[best_i].tolist())
     return [x1, y1, x2, y2]
 
+def detect_in_roi(frame, last_box):
+    """
+    ค้นป้ายเฉพาะบริเวณรอบ ๆ กรอบเดิม (เร็วกว่าค้นทั้งเฟรมหลายเท่า)
+    คืน [x1,y1,x2,y2] บนพิกัดของเฟรมเต็ม หรือ None ถ้าไม่เจอในบริเวณนั้น
+
+    last_box: กรอบจากเฟรมก่อนหน้า [x1,y1,x2,y2] (พิกัดเฟรมเต็ม)
+    """
+    H, W = frame.shape[:2]
+    lx1, ly1, lx2, ly2 = last_box
+    bw, bh = lx2 - lx1, ly2 - ly1
+    if bw <= 0 or bh <= 0:
+        return None
+
+    # ขยายออกจากกรอบเดิมเผื่อรถขยับระหว่างเฟรม
+    mx, my = int(bw * ROI_MARGIN), int(bh * ROI_MARGIN)
+    rx1, ry1 = max(0, lx1 - mx), max(0, ly1 - my)
+    rx2, ry2 = min(W, lx2 + mx), min(H, ly2 + my)
+    if rx2 - rx1 < 16 or ry2 - ry1 < 16:
+        return None
+
+    roi = frame[ry1:ry2, rx1:rx2]
+    with model_lock:
+        det = detector(roi, conf=DETECT_CONF, imgsz=ROI_IMGSZ, half=False,
+                       verbose=False, device=YOLO_DEVICE)
+    boxes = det[0].boxes
+    if boxes is None or len(boxes) == 0:
+        return None
+
+    best_i = int(boxes.conf.argmax())
+    bx1, by1, bx2, by2 = map(int, boxes.xyxy[best_i].tolist())
+    # แปลงพิกัดจากใน ROI กลับเป็นพิกัดบนเฟรมเต็ม
+    return [bx1 + rx1, by1 + ry1, bx2 + rx1, by2 + ry1]
+
+
 def deskew_plate(img, max_angle=25.0):
     """หมุนภาพป้ายที่เอียงให้ตรงก่อนอ่านตัวอักษร (คืนภาพเดิมถ้าประเมินมุมไม่ได้)"""
     try:
@@ -358,7 +411,22 @@ def detect():
         #   ค้นหาอยู่   -> ใช้ DETECT_IMGSZ (ช้าแต่ไว) จับรถที่เพิ่งเข้ามาไกล ๆ ให้เร็วที่สุด
         #   เกาะติดแล้ว -> ใช้ TRACK_IMGSZ (เร็วกว่า 3 เท่า) ให้กรอบตามป้ายลื่น ๆ
         tracking = request.form.get("tracking") == "1"
-        box = detect_best_plate(frame, imgsz=TRACK_IMGSZ if tracking else None)
+
+        # ถ้าฝั่ง C# ส่งกรอบจากเฟรมก่อนหน้ามาด้วย ให้ค้นเฉพาะบริเวณรอบ ๆ กรอบนั้น
+        # (เร็วกว่าค้นทั้งเฟรม ~4 เท่า และ conf ดีกว่าด้วย เพราะป้ายกินพื้นที่
+        #  ในภาพที่ป้อนเข้าโมเดลมากกว่า) ถ้าหาในบริเวณนั้นไม่เจอ ค่อยถอยไปค้นทั้งเฟรม
+        last_box = None
+        if tracking:
+            try:
+                last_box = [int(request.form[k]) for k in ("bx1", "by1", "bx2", "by2")]
+            except (KeyError, ValueError):
+                last_box = None
+
+        box = None
+        if last_box is not None:
+            box = detect_in_roi(frame, last_box)
+        if box is None:
+            box = detect_best_plate(frame, imgsz=TRACK_IMGSZ if tracking else None)
         # ไม่พิมพ์ log ทุกครั้งที่เรียก — endpoint นี้ถูกยิงหลายครั้งต่อวินาทีต่อกล้อง
         # การเขียน console บน Windows ช้ากว่าที่คิด (บล็อกจริง) และทำให้ log จมจน
         # หา error ที่สำคัญไม่เจอ  เปิดดูได้ด้วย LPR_DEBUG_PLATE=1 ถ้าต้องการ
