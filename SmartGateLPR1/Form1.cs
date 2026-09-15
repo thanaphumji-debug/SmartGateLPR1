@@ -47,7 +47,13 @@ namespace SmartGateLPR1
         // ตัวแปร Global สำหรับรองรับกล้อง 2 ตัว (แยกตาม ID กล้อง)
         private Rectangle triggerZone = new Rectangle(150, 200, 400, 200);
         private double triggerThreshold = 20.0;
-        private int cooldownSeconds = 1;
+        // เว้นระยะระหว่างการยิงอ่านเลขของกล้องเดียวกัน (วินาที)
+        //
+        // เดิม 1 วินาทีเต็ม ซึ่งเป็นตัวถ่วงหลักของเวลา "กว่าจะส่งค่าให้ตัดสิน":
+        // ต้องอ่านให้ได้เลขเดิมซ้ำ readsToConfirm (2) ครั้ง = เสียเวลารออย่างน้อย
+        // 1 วินาทีเปล่า ๆ คั่นกลาง ทั้งที่ /predict เองใช้เวลาแค่ ~0.3-0.5 วิ
+        // และมี isAIProcessing กันไม่ให้ยิงซ้อนอยู่แล้ว จึงไม่ต้องเว้นนานขนาดนั้น
+        private double cooldownSeconds = 0.25;
 
         // เปลี่ยน 2 บรรทัดนี้ให้เป็น Array ขนาด 3 ช่อง (เพื่อใช้ช่อง index 1 และ 2 ให้ตรงกับ ID กล้อง)
         private Bitmap[] previousZoneImages = new Bitmap[3];
@@ -84,13 +90,16 @@ namespace SmartGateLPR1
         // ความมั่นใจสูงสุดของเลขที่กล้องนั้นยืนยัน (ใช้เลือกฝั่งที่น่าเชื่อกว่าตอนหน้า-หลังไม่ตรงกัน)
         private double[] bestConf = new double[3];
         // กันค้าง: ส่งไปแล้วแต่ผลตัดสินไม่ออกสักทีภายในกี่วินาที ให้กลับไปอ่านใหม่
-        private double submitHoldMaxSec = 8.0;
-        // ยืนยันได้กล้องแรกแล้ว รออีกกล้องอีกกี่วินาทีก่อนตัดสิน (ถ้าอีกกล้องเห็นป้ายอยู่)
-        // สั้น ๆ พอให้ได้ผลครบสองฝั่ง โดยไม่ถ่วงรถที่มีกล้องเห็นข้างเดียวจริง ๆ
-        // 2.5 วิ = เผื่อให้อีกกล้องอ่านครบ readsToConfirm รอบ (รอบละ ~1 วิ ตาม cooldownSeconds)
-        // ค่านี้ไม่ได้ถ่วงรถที่กล้องเห็นข้างเดียวจริง ๆ เพราะจะรอเฉพาะตอนอีกกล้อง
-        // "กำลังเห็นป้ายอยู่" และยังส่งผลไม่เสร็จเท่านั้น
-        private double bothCamWaitSec = 2.5;
+        // ต้องมากกว่า otherCamMaxWaitSec เสมอ ไม่งั้นกล้องที่ส่งไปแล้วจะปลดล็อก
+        // กลับไปอ่านใหม่ทั้งที่ศูนย์ตัดสินใจยังรออีกกล้องอยู่
+        private double submitHoldMaxSec = 12.0;
+        // เพดานการรออีกกล้อง (วินาที)
+        //
+        // ไม่ได้รอตายตัวตามเวลา แต่รอตาม "อีกกล้องกำลังทำอะไรอยู่":
+        //   เห็นป้ายอยู่ / กำลังอ่านเลขอยู่  → รอต่อไปเรื่อย ๆ จนกว่าจะเสร็จ
+        //   ตรวจไม่เจอป้ายเลย                → ตัดสินทันที ไม่ต้องรอ
+        // เพดานนี้เป็นแค่ตัวกันค้าง เผื่อกล้องเห็นป้ายแต่อ่านไม่ออกสักที
+        private double otherCamMaxWaitSec = 10.0;
         // ล็อกแล้วอ่านซ้ำเพื่อ "ตรวจทาน" ทุกกี่วินาที
         //
         // เดิมล็อกแล้วคือหยุดอ่านถาวร จนกว่าจะครบรอบเปิด-ปิดไม้กั้น (ResetLprTurn)
@@ -954,25 +963,42 @@ namespace SmartGateLPR1
             return "ยังไม่ได้เลขทะเบียน";
         }
 
-        /// <summary>ยืนยันได้กล้องเดียว แต่อีกกล้องกำลังเห็นป้ายอยู่และยังส่งไม่เสร็จ
-        /// → รออีกนิด จะได้ตัดสินจากข้อมูลครบสองฝั่ง (ไม่งั้นผลจะขึ้นว่า "ผ่านโดยกล้องหน้า"
-        /// เสมอ เพราะกล้องที่เสร็จก่อนสั่งตัดสินทันที) — รอสั้น ๆ ไม่เกิน bothCamWaitSec</summary>
-        private bool ShouldWaitForOtherCam(string p1, string p2)
+        /// <summary>ได้ผลจากกล้องเดียว ควรรออีกกล้องไหม — ตัดสินจาก "อีกกล้องกำลังทำอะไรอยู่"
+        /// ไม่ใช่การรอตามเวลาตายตัว
+        ///
+        ///   เห็นป้ายอยู่ หรือกำลังอ่านเลขอยู่ → รอต่อ (มันกำลังจะได้คำตอบ)
+        ///   ตรวจไม่เจอป้ายเลย                 → ไม่ต้องรอ ตัดสินได้เลย
+        ///
+        /// มีเพดาน otherCamMaxWaitSec กันค้างกรณีเห็นป้ายแต่อ่านไม่ออกสักที
+        /// คืนเหตุผลออกมาทาง waitReason ไว้โชว์บนหน้าจอด้วย</summary>
+        private bool ShouldWaitForOtherCam(string p1, string p2, out string waitReason)
         {
+            waitReason = "";
             if (p1 != "" && p2 != "") return false;          // ครบสองฝั่งแล้ว
             if (p1 == "" && p2 == "") return false;          // ยังไม่มีสักฝั่ง
             int other = (p1 != "") ? 2 : 1;
             int mine = (p1 != "") ? 1 : 2;
+            string otherName = other == 1 ? "หน้า" : "หลัง";
 
             bool otherSeeing;
             lock (hybridLock) otherSeeing = plateSeen[other];
-            if (!otherSeeing) return false;                  // อีกกล้องไม่เห็นป้ายเลย ไม่ต้องรอ
 
             lock (turnLock)
             {
-                if (plateSubmitted[other]) return false;     // อีกกล้องส่งมาแล้ว (แต่ค่าหมดอายุ) ไม่ต้องรอ
+                if (plateSubmitted[other]) return false;     // อีกกล้องส่งมาแล้ว (ค่าหมดอายุไปเอง) ไม่ต้องรอ
                 if (plateSubmittedAt[mine] == DateTime.MinValue) return false;
-                return (DateTime.Now - plateSubmittedAt[mine]).TotalSeconds < bothCamWaitSec;
+
+                double waited = (DateTime.Now - plateSubmittedAt[mine]).TotalSeconds;
+                if (waited >= otherCamMaxWaitSec) return false;   // เพดานกันค้าง
+
+                // อีกกล้องกำลังทำงานอยู่จริงไหม
+                bool busy = isReading[other] || confirmCount[other] > 0 || otherSeeing;
+                if (!busy) return false;                     // ไม่เจอป้าย ไม่ได้อ่านอะไรอยู่ → ตัดสินเลย
+
+                waitReason = isReading[other] || confirmCount[other] > 0
+                    ? $"กล้อง{otherName}กำลังอ่านเลขอยู่ ({confirmCount[other]}/{readsToConfirm}) — รอให้เสร็จก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)"
+                    : $"กล้อง{otherName}เห็นป้ายแล้ว กำลังจะอ่าน — รอก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)";
+                return true;
             }
         }
 
@@ -1004,10 +1030,15 @@ namespace SmartGateLPR1
             bool m1 = p1 != "" && NormPlate(p1) == NormPlate(dbPlate);
             bool m2 = p2 != "" && NormPlate(p2) == NormPlate(dbPlate);
 
-            // อ่านได้กล้องเดียวแต่อีกกล้องกำลังจะได้ → รออีกนิดให้ครบสองฝั่งก่อนตัดสิน
+            // อ่านได้กล้องเดียวแต่อีกกล้องกำลังจะได้ → รอให้ครบสองฝั่งก่อนตัดสิน
             // (ทำทุกกรณี ไม่ใช่เฉพาะตอนเปิดสวิตช์ "ต้องตรงทั้ง 2 กล้อง" เหมือนเดิม
             //  เพราะต่อให้นโยบายไม่บังคับ ผลที่แสดงก็ควรบอกได้ว่าหน้า-หลังตรงกันไหม)
-            if (ShouldWaitForOtherCam(p1, p2)) return;
+            if (ShouldWaitForOtherCam(p1, p2, out string waitWhy))
+            {
+                SetAccessUi("⏳ กำลังรอกล้องอีกตัว...", Color.DarkOrange, Color.Red,
+                            dbPlate, "-", waitWhy);
+                return;
+            }
 
             // สวิตช์ "ต้องตรงทั้ง 2 กล้อง" = บล็อกเฉพาะตอนอ่านได้ทั้งคู่แต่ขัดกัน
             // (รถติดป้ายด้านเดียว อีกกล้องอ่านไม่เจอ → ไม่ถือว่าขัด ยังผ่านได้)
@@ -1076,8 +1107,13 @@ namespace SmartGateLPR1
         // ---- โหมด LPR อย่างเดียว (ไม่มีบัตร): ป้ายตรงฐานข้อมูล = ผ่าน ----
         private void DecideLprOnly(string p1, string p2)
         {
-            // อ่านได้กล้องเดียวแต่อีกกล้องกำลังจะได้ → รออีกนิดให้ครบสองฝั่ง (เหมือนโหมดไฮบริด)
-            if (ShouldWaitForOtherCam(p1, p2)) return;
+            // อ่านได้กล้องเดียวแต่อีกกล้องกำลังจะได้ → รอให้ครบสองฝั่ง (เหมือนโหมดไฮบริด)
+            if (ShouldWaitForOtherCam(p1, p2, out string waitWhy))
+            {
+                SetAccessUi("⏳ กำลังรอกล้องอีกตัว...", Color.DarkOrange, Color.Red,
+                            p1 != "" ? p1 : p2, "-", waitWhy);
+                return;
+            }
 
             logMode = "LPR"; logTag = ""; logPlate1 = p1; logPlate2 = p2;
             logPlateDb = ""; logProvince = ""; logOwner = ""; logPermission = "";
@@ -1436,6 +1472,9 @@ namespace SmartGateLPR1
 
         // 💡 1. เพิ่มตัวแปรเช็คสถานะ AI ไว้ (สำคัญมาก ป้องกัน RAM ล้น)
         private bool isAIProcessing = false;
+        // กล้องนี้กำลังรอผลอ่านเลขจากฝั่ง AI อยู่หรือเปล่า (แยกรายกล้อง)
+        // ใช้ตอบคำถาม "อีกกล้องกำลังทำอะไรอยู่" ตอนตัดสินใจว่าจะรอมันไหม
+        private bool[] isReading = new bool[3];
 
         // ขอสิทธิ์อ่านเลขทะเบียน — ให้ทีละกล้องเท่านั้น ใครเจอป้ายก่อนได้ก่อน
         private bool TryTakeLprTurn(int camId)
@@ -1526,8 +1565,13 @@ namespace SmartGateLPR1
                     }
                 }
 
-                // ปล่อยคิวเฉพาะตอนยืนยันแล้วเท่านั้น — ยังไม่ชัวร์ = อ่านซ้ำต่อ ไม่สลับให้อีกกล้อง
-                if (confirmed && lprOwner == camId) lprOwner = 0;
+                // ปล่อยคิวทุกครั้งที่อ่านจบ ไม่ใช่เฉพาะตอนยืนยันแล้ว
+                //
+                // เดิมกล้องแรกจะยึดคิวไว้จนกว่าจะยืนยันครบ (2 รอบ) อีกกล้องจึงเริ่ม
+                // อ่านไม่ได้เลยจนกล้องแรกเสร็จ กว่าจะได้ผลครบสองฝั่งจึงนานมาก
+                // ตอนนี้สลับกันอ่านคนละรอบ ทั้งสองกล้องจึงยืนยันเสร็จไล่เลี่ยกัน
+                // (ยังอ่านทีละกล้องอยู่ดี เพราะ isAIProcessing กันการยิงซ้อนไว้แล้ว)
+                if (lprOwner == camId) lprOwner = 0;
                 return confirmed;
             }
         }
@@ -1590,6 +1634,7 @@ namespace SmartGateLPR1
             }
 
             isAIProcessing = true; // ล็อกคิวบอกว่า AI กำลังทำงาน
+            lock (turnLock) isReading[camId] = true;
 
             try
             {
@@ -1710,6 +1755,7 @@ namespace SmartGateLPR1
             finally
             {
                 isAIProcessing = false; // ปลดล็อกคิวรับรูปใหม่
+                lock (turnLock) isReading[camId] = false;
                 bitmap.Dispose();       // 💡 เคลียร์ขยะรูปนี้ออกจาก RAM ทันที
                 ReleaseLprTurn(camId, "", 0, out _);
             }
