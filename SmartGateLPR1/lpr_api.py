@@ -185,18 +185,59 @@ if os.environ.get("LPR_ENABLE_MKLDNN", "0") != "1":
     os.environ.setdefault("FLAGS_use_mkldnn", "0")
 
 from paddleocr import PaddleOCR
+import paddle as _paddle
 
-PADDLE_DEVICE = "gpu:0" if USE_GPU else "cpu"
+# ---------- PaddleOCR จะรันบน GPU หรือ CPU ----------
+#
+# ⚠️ ห้ามใช้ torch.cuda.is_available() ตัดสินแทน (โค้ดเดิมทำแบบนั้น) เพราะ
+# torch กับ paddle เป็นคนละไลบรารี ติดตั้งแยกกัน มี/ไม่มี CUDA ไม่จำเป็นต้องตรงกัน
+# เครื่องที่ลง torch แบบมี CUDA แต่ลง paddlepaddle รุ่น CPU จะโดนสั่งให้ PaddleOCR
+# ไปใช้ "gpu:0" ทั้งที่มันรันไม่ได้  ต้องถาม paddle เองเท่านั้น
+PADDLE_HAS_GPU = False
+try:
+    PADDLE_HAS_GPU = (_paddle.device.is_compiled_with_cuda() and
+                      _paddle.device.cuda.device_count() > 0)
+except Exception:
+    PADDLE_HAS_GPU = False
+
+PADDLE_DEVICE = "gpu:0" if PADDLE_HAS_GPU else "cpu"
+if PADDLE_HAS_GPU:
+    print("🎯 PaddleOCR: รันบน GPU")
+else:
+    print("⚠️  PaddleOCR: รันบน CPU (ช้ากว่า GPU มาก)")
+    if USE_GPU:
+        # มีการ์ดจอให้ใช้อยู่แล้ว แต่ paddle ที่ลงไว้เป็นรุ่น CPU — บอกวิธีแก้ให้ชัด
+        print("   💡 เครื่องนี้มีการ์ดจอที่ใช้ได้ แต่ paddlepaddle ที่ติดตั้งเป็นรุ่น CPU")
+        print("      ลงรุ่น GPU แทนจะเร็วขึ้นมาก:  pip uninstall paddlepaddle")
+        print("      แล้วลง paddlepaddle-gpu ตามรุ่น CUDA ของเครื่อง")
+        print("      (บน GPU จะไม่เจอบั๊ก oneDNN ด้วย เพราะ oneDNN เป็นไลบรารีของ CPU)")
 print(f"⏳ กำลังโหลด PaddleOCR ภาษาไทย ({PADDLE_REC_MODEL})...")
 # ปิดโมดูลที่ไว้จัดการเอกสาร (หมุนหน้า/ดัดกระดาษ) ป้ายทะเบียนไม่ต้องใช้ และทำให้ช้า
 
 # engine_config: บังคับค่าที่ส่งต่อไปถึง Paddle Inference โดยตรง
-#   run_mode="paddle"      -> ไม่ใช้ oneDNN (เทียบเท่า config.disable_mkldnn())
-#   enable_new_ir=False    -> ไม่ใช้ executor รุ่นใหม่ (PIR) ซึ่งเป็นตัวที่พังจริง ๆ
-# ที่ต้องทำสองชั้น (ทั้ง enable_mkldnn=False และตรงนี้) เพราะ error ที่เจอโผล่จาก
-# paddle/fluid/framework/new_executor/instruction/onednn/onednn_instruction.cc
-# คือจุดที่ PIR executor แปลง attribute ของ op oneDNN — ปิดอย่างใดอย่างหนึ่งก็พอ
-# ตัดเส้นทางนั้นได้ แต่ปิดทั้งคู่ชัวร์กว่า เพราะ paddlex มีหลายจุดที่ตั้งค่าเอง
+#
+# ⛔ บน CPU ห้ามเปิด oneDNN (mkldnn) กับ paddlepaddle รุ่นนี้เด็ดขาด — จะพังด้วย
+#      (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
+#      [pir::ArrayAttribute<pir::DoubleAttribute>]
+#      (at ...new_executor/instruction/onednn/onednn_instruction.cc:118)
+#
+# เคยพยายามแก้ด้วย enable_new_ir=False แล้วไม่ได้ผล เหตุผลอยู่ที่
+# paddlex/inference/models/runners/paddle_static/runner.py:493-494 :
+#
+#     if hasattr(config, "enable_new_ir"):
+#         config.enable_new_ir(self._config.get("enable_new_ir", True))
+#     if hasattr(config, "enable_new_executor"):
+#         config.enable_new_executor()          # <-- เรียกตายตัว ปิดไม่ได้เลย
+#
+# คือ "new IR" กับ "new executor" เป็นคนละสวิตช์ เราปิดได้แต่ตัวแรก ส่วน
+# executor รุ่นใหม่ถูกเปิดตายตัวโดยไม่มีพารามิเตอร์ให้ปิด และไฟล์ที่พัง
+# (onednn_instruction.cc) อยู่ใน new_executor พอดี → ตราบใดที่ยังรันบน CPU
+# และเปิด oneDNN ก็จะเจอบั๊กนี้เสมอ ไม่ว่าจะตั้ง enable_new_ir ยังไง
+#
+# ทางออกจริงคือย้ายไปรันบน GPU (oneDNN เป็นไลบรารีของ CPU ไม่ถูกใช้เลยบน GPU)
+# LPR_ENABLE_MKLDNN=1 ยังเปิดได้ถ้าอนาคตอัปเดต paddlepaddle แล้วบั๊กหาย
+# แต่กับรุ่นที่ใช้อยู่ตอนนี้ = พังแน่นอน
+#
 # (ต้องใส่ cpu_threads เองด้วย เพราะพอส่ง engine_config เข้าไป PaddleOCR จะใช้ค่านี้
 #  แทนค่าที่มันสร้างให้เอง — ถ้าไม่ใส่จะหล่นไปใช้ค่าดีฟอลต์ของ Paddle ที่น้อยกว่า)
 ENABLE_MKLDNN = os.environ.get("LPR_ENABLE_MKLDNN", "0") == "1"
@@ -216,17 +257,8 @@ _ocr_kwargs = dict(
     use_doc_unwarping=False,
     use_textline_orientation=PADDLE_TEXTLINE_ORI,
     device=PADDLE_DEVICE,
-    # mkldnn (oneDNN) — ตัวเร่งความเร็ว Paddle บน CPU ปกติเปิดไว้
-    #
-    # ที่ต้องปิดไปก่อนหน้านี้เพราะมันชนกับ PIR (executor รุ่นใหม่) แล้วพังด้วย
-    #   (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support ...
-    #   (at ...new_executor/instruction/onednn/onednn_instruction.cc:118)
-    # สังเกตว่า error มาจาก "PIR executor" ล้วน ๆ ซึ่งตอนนี้เราปิดไปแล้วด้วย
-    # enable_new_ir=False (ดู _PADDLE_ENGINE_CFG) จึงน่าจะเปิด mkldnn กลับมาได้
-    # โดยไม่พังอีก และได้ความเร็วบน CPU คืนมา
-    #
-    # แต่ยังไม่กล้าเปิดเป็นค่าเริ่มต้น เพราะยังไม่ได้ทดสอบกับเครื่องจริง
-    # ถ้าอยากลอง: ตั้ง LPR_ENABLE_MKLDNN=1 ก่อนรัน ถ้าไม่พังก็เร็วขึ้นฟรี ๆ
+    # ปิด oneDNN เสมอบน CPU — ทดสอบกับเครื่องจริงแล้วว่าเปิดเมื่อไหร่พังเมื่อนั้น
+    # (เหตุผลเต็ม ๆ อยู่ในคอมเมนต์ของ _PADDLE_ENGINE_CFG ด้านบน)
     enable_mkldnn=ENABLE_MKLDNN,
     # ปล่อย text_det_limit_* ไว้ที่ค่าเริ่มต้น (limit_type="max", 960px) —
     # ลองสลับเป็น "min" มาก่อนแล้วแต่ขยายภาพใหญ่ (เช่นภาพเต็มเฟรมตอน fallback)
