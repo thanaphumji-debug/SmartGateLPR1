@@ -1492,6 +1492,25 @@ namespace SmartGateLPR1
                                 }
                             }
                         }
+                        else
+                        {
+                            // เดิมตรงนี้ "ไม่มี else" เลย — พอฝั่ง AI ตอบ error (เช่น
+                            // อ่านตัวอักษรไม่ออก / ไม่พบป้ายในภาพ) โค้ดจะเงียบสนิท
+                            // ไม่แจ้งอะไรบนหน้าจอ ผู้ใช้จึงเห็นแค่ "ตรวจจับเจอกรอบ
+                            // แล้วจบแค่นั้น" โดยไม่รู้ว่าเกิดอะไรขึ้น
+                            // ต้องโชว์สาเหตุออกมา ไม่งั้นไล่ปัญหาไม่ได้เลย
+                            string why = "อ่านไม่สำเร็จ";
+                            try
+                            {
+                                if (result != null && result.message != null)
+                                    why = (string)result.message;
+                            }
+                            catch { }
+
+                            string camName2 = camId == 1 ? "หน้า" : "หลัง";
+                            SetLprStatus(camId, $"⚠️ {why} (กล้อง{camName2})", Color.OrangeRed);
+                            Console.WriteLine($"[predict] กล้อง{camId} อ่านไม่สำเร็จ: {why}");
+                        }
                     }
                 }
             }

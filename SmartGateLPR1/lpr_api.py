@@ -120,7 +120,15 @@ MIN_PLATE_ASPECT = 1.3
 # ขยายสูงไม่ได้ (120px โดน 6 เท่าแล้วพัง) จึงตั้งเป้าให้สูงพอจะช่วยภาพขนาด
 # กลาง ๆ (289px) ได้แบบไม่ต้องขยายแรง และจำกัดเพดานไว้กันภาพเล็กสุดพังซ้ำ
 TARGET_OCR_HEIGHT = 350
-MAX_UPSCALE = 3.0   # ห้ามขยายเกินกี่เท่า กันภาพเบลออยู่แล้วเละไปมากกว่าเดิม
+# เพดานการขยาย — เดิม 3.0 ซึ่งพอสำหรับภาพทดสอบ แต่ไม่พอกับกล้องจริงหน้าไม้กั้น
+# ที่ป้ายกินพื้นที่แค่ ~2% ของเฟรม: วัดจากภาพ CCTV จริงได้ crop สูงแค่ ~74px
+# ที่ 3.0 เท่าจะได้แค่ 222px (ยังต่ำกว่าเป้า 350px) และถ้ารถอยู่ไกลกว่านั้นอีก
+# เช่น crop สูง 45px จะได้แค่ 135px ซึ่งเล็กเกินกว่า PaddleOCR จะอ่านออก
+#
+# 5.0 ทำให้ crop 74px แตะเป้า 350px พอดี และ crop 45px ได้ 225px (ใกล้เคียง
+# 222px ที่พิสูจน์แล้วว่าอ่านออกจริงจากภาพ CCTV กลางวัน) ยังต่ำกว่า 6.13x
+# ที่เคยทำให้ภาพคุณภาพต่ำเละจนอ่านไม่ได้เลย
+MAX_UPSCALE = 5.0
 MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดที่ OCR มั่นใจต่ำกว่านี้
 # บันทึกภาพป้ายที่ crop ได้ลง debug_plate.jpg ทุกครั้งที่อ่าน (ใช้ตอน debug เท่านั้น)
 # เปิดได้โดยตั้ง environment variable: LPR_DEBUG_PLATE=1
@@ -490,7 +498,8 @@ def predict():
         if SAVE_DEBUG_PLATE:
             cv2.imwrite("debug_plate.jpg", plate)
 
-        plate_text, province, confidence = read_plate_paddle(plate)
+        # ขอ raw lines มาด้วยตั้งแต่รอบแรก จะได้ไม่ต้องเรียก OCR ซ้ำตอนอ่านไม่ออก
+        plate_text, province, confidence, raw_lines = read_plate_paddle(plate, return_raw=True)
 
         # กันกรณี YOLO ตัดกรอบพลาด (พบว่าเกิดได้เมื่อป้ายกินพื้นที่เกือบเต็มเฟรม —
         # โมเดลไม่ค่อยเจอภาพแบบนี้ตอนเทรน จึงหากรอบผิดจนตัดตัวเลขขาดไปครึ่งป้าย)
@@ -506,18 +515,26 @@ def predict():
         crop_ratio = (x2 - x1) / max(1, (y2 - y1))
         suspicious = crop_ratio < MIN_PLATE_ASPECT or not plate_text or len(plate_text) < 5
         if suspicious:
-            alt_text, alt_province, alt_conf = read_plate_paddle(frame)
+            alt_text, alt_province, alt_conf, alt_raw = read_plate_paddle(frame, return_raw=True)
             # เลือกผลที่ "สมบูรณ์กว่า" โดยดูจากความยาว — ถ้ากรอบตัดขาดจริง ผลจาก
             # ภาพเต็มควรยาวกว่า (ไม่ได้ตัด) ถ้าอ่านจากกรอบได้ครบอยู่แล้วก็ไม่เปลี่ยน
             if alt_text and (not plate_text or len(alt_text) > len(plate_text)):
                 print(f"   ⚠️ กรอบต้องสงสัย (ratio={crop_ratio:.2f}, อ่านได้ '{plate_text}')"
                       f" — ใช้ผลจากภาพเต็มแทน: '{alt_text}'")
                 plate_text, province, confidence = alt_text, alt_province, alt_conf
+                raw_lines = alt_raw
 
         print(f"🔤 อ่านตัวอักษร: '{plate_text}' | จังหวัด: '{province}' | conf {confidence:.2f}")
 
         if not plate_text:
-            return jsonify({"status": "error", "message": "อ่านตัวอักษรบนป้ายไม่ได้"})
+            # อ่านไม่ออก — พิมพ์รายละเอียดให้เสมอ (ไม่ซ่อนหลัง debug flag) เพราะนี่คือ
+            # ข้อมูลเดียวที่ใช้ไล่ปัญหาได้ว่าติดที่ "ป้ายเล็กเกินไป" หรือ "OCR เห็น
+            # ข้อความแต่ดัดไม่เข้ารูปทะเบียน" ซึ่งแก้กันคนละทาง
+            ch, cw = plate.shape[:2]
+            seen = " | ".join(f"{t!r}({sc:.2f})" for t, sc, _ in raw_lines) or "(ไม่เห็นข้อความเลย)"
+            print(f"   ℹ️ crop ป้าย {cw}x{ch}px -> ขยายเป็นสูง "
+                  f"{min(MAX_UPSCALE, TARGET_OCR_HEIGHT / max(1, ch)) * ch:.0f}px | OCR เห็น: {seen}")
+            return jsonify({"status": "error", "message": f"อ่านตัวอักษรบนป้ายไม่ได้ (ป้าย {cw}x{ch}px)"})
 
         full_text = f"{plate_text} {province}".strip()
 
