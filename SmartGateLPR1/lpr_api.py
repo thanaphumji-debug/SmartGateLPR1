@@ -500,6 +500,50 @@ def detect():
         print(f"❌ /detect error: {e}")     # error ยังพิมพ์เสมอ ไม่ควรเงียบหาย
         return jsonify({"status": "error", "message": str(e)})
 
+# ===================== โหวตจังหวัดข้ามเฟรม =====================
+#
+# ปัญหา: บรรทัด "จังหวัด" ตัวเล็กกว่าเลขทะเบียนมาก ภาพ CCTV จริงจึงอ่านได้บ้าง
+# ไม่ได้บ้าง และที่อ่านได้ก็เพี้ยนคนละอย่างในแต่ละเฟรม
+#
+# วิธีแก้: รถหนึ่งคันถูกอ่านหลายครั้งอยู่แล้วก่อนไม้กั้นจะตัดสิน จึงเก็บคำตอบ
+# ของ "เลขทะเบียนเดียวกัน" ไว้ช่วงสั้น ๆ แล้วตอบด้วยจังหวัดที่โหวตมาบ่อยที่สุด
+# คำตอบที่ถูกจะซ้ำ ๆ กัน ส่วนคำตอบที่เพี้ยนมักเพี้ยนไปคนละทางทุกครั้ง เสียงจึงกระจาย
+#
+# ไม่ถ่วงเวลาตัดสินเลย เพราะตอบทันทีทุกครั้งด้วยเสียงข้างมาก ณ ตอนนั้น
+# (ไม่ได้รอให้ครบจำนวนโหวตก่อน)
+PROVINCE_VOTE_TTL = float(os.environ.get("LPR_PROV_VOTE_TTL", "12"))  # เก็บโหวตไว้กี่วินาที
+_province_votes = {}          # {เลขทะเบียน: [(จังหวัด, เวลา), ...]}
+_province_votes_lock = threading.Lock()
+
+
+def vote_province(plate_text, province):
+    """บันทึกโหวตแล้วคืนจังหวัดที่ได้เสียงข้างมากของทะเบียนนี้"""
+    if not plate_text:
+        return province
+    now = time.time()
+    with _province_votes_lock:
+        # ล้างทะเบียนที่เงียบไปนานแล้ว กัน dict โตไม่รู้จบตอนรันยาว ๆ
+        for key in [k for k, v in _province_votes.items()
+                    if not v or now - v[-1][1] > PROVINCE_VOTE_TTL]:
+            del _province_votes[key]
+
+        votes = [v for v in _province_votes.get(plate_text, [])
+                 if now - v[1] <= PROVINCE_VOTE_TTL]
+        if province:
+            votes.append((province, now))
+        _province_votes[plate_text] = votes[-20:]
+
+        names = [v[0] for v in votes]
+        if not names:
+            return ""
+        # เสียงเท่ากัน → เอาอันที่อ่านได้ล่าสุด (ใกล้เคียงสภาพปัจจุบันที่สุด)
+        winner = max(set(names), key=lambda x: (names.count(x), len(names) - 1 - names[::-1].index(x)))
+        if winner != province and province:
+            print(f"   🗳️ จังหวัด: เฟรมนี้อ่านได้ '{province}' "
+                  f"แต่เสียงข้างมากของ {plate_text} คือ '{winner}' ({names.count(winner)}/{len(names)})")
+        return winner
+
+
 @app.route("/predict", methods=["POST"])
 def predict():
     if "image" not in request.files:
@@ -576,6 +620,9 @@ def predict():
                 raw_lines = alt_raw
 
         print(f"🔤 อ่านตัวอักษร: '{plate_text}' | จังหวัด: '{province}' | conf {confidence:.2f}")
+
+        # จังหวัดที่อ่านได้เฟรมเดียวไม่น่าเชื่อถือ ใช้เสียงข้างมากของทะเบียนนี้แทน
+        province = vote_province(plate_text, province)
 
         if not plate_text:
             # อ่านไม่ออก — พิมพ์รายละเอียดให้เสมอ (ไม่ซ่อนหลัง debug flag) เพราะนี่คือ

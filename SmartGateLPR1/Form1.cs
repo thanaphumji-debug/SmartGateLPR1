@@ -66,16 +66,20 @@ namespace SmartGateLPR1
         private readonly object turnLock = new object();
         private int lprOwner = 0;                       // กล้องที่กำลังถือสิทธิ์อ่าน (0 = ว่าง)
         private DateTime lprOwnerSince = DateTime.MinValue;
-        private int lprOwnerMaxSec = 8;                // ถือนานเกินนี้ให้อีกตัวแย่งได้ กันค้าง
+        private int lprOwnerMaxSec = 4;                // ถือนานเกินนี้ให้อีกตัวแย่งได้ กันค้าง
         private bool[] plateLocked = new bool[3];       // อ่านเลขได้แล้ว ค้างไว้ ไม่อ่านซ้ำ
         private string[] lastReadPlate = new string[] { "", "", "" };
         private int[] confirmCount = new int[3];
-        private int readsToConfirm = 3;                 // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะค้าง
+        // ต้องอ่านได้เลขเดิมซ้ำกี่ครั้งถึงจะค้าง
+        // ลดจาก 3 เหลือ 2: การยืนยันซ้ำแต่ละรอบต้องรอ /predict อีกหนึ่งรอบ (~0.3-0.5 วิ)
+        // รอบที่ 3 แทบไม่เคยเปลี่ยนคำตอบจากรอบที่ 2 แต่ถ่วงเวลาตัดสินใจทุกคัน
+        // ตั้ง 1 ได้ถ้าอยากตัดการยืนยันซ้ำทิ้งเลย (เร็วสุด แต่พลาดง่ายขึ้น)
+        private int readsToConfirm = 2;
 
         // กันแท็กเดิมวนกระตุ้นซ้ำหลังตัดสินไปแล้ว
         private string lastDecidedTag = "";
         private DateTime lastDecidedAt = DateTime.MinValue;
-        private int sameTagCooldownSec = 10;
+        private int sameTagCooldownSec = 6;
         private DateTime[] lastDetectTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private bool[] isDetecting = new bool[3];
         private readonly object boxLock = new object();
@@ -139,16 +143,17 @@ namespace SmartGateLPR1
         private bool gateBusy = false;                 // กันตัดสินซ้ำระหว่างไม้เปิดค้าง
         private System.Windows.Forms.Timer timerHybridTimeout;
 
-        private int hybridWindowSec = 15;              // สองฝั่งต้องมาห่างกันไม่เกินกี่วินาที
-        private int noPlateGraceSec = 10;    // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน
-        private int noPlateDenySec = 15;     // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปฏิเสธ (สวิตช์ 2 ปิด)
+        // ===== เวลาทุกเงื่อนไข (ปรับให้กระชับ รถจะได้ไม่ต้องจอดรอนาน) =====
+        private int hybridWindowSec = 10;              // สองฝั่งต้องมาห่างกันไม่เกินกี่วินาที
+        private int noPlateGraceSec = 7;     // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน
+        private int noPlateDenySec = 9;      // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปฏิเสธ (สวิตช์ 2 ปิด)
         private bool strictProvince = false;           // true = จังหวัดต้องตรงด้วยถึงเปิด
         private bool requireRfid = true;
         private bool allowNoPlate = true;
         private bool requirePlatesAgree = false;
         private bool allowPlateTagMismatch = false;
         private DateTime plateSeenNoTagAt = DateTime.MinValue;  // เวลาที่เริ่มเห็นป้ายทั้งที่ยังไม่มีแท็ก (โหมด RFID)
-        private int plateOnlyDenySec = 3;                       // เจอป้ายแต่ไม่มีแท็กกี่วิ → ปฏิเสธ
+        private int plateOnlyDenySec = 2;                       // เจอป้ายแต่ไม่มีแท็กกี่วิ → ปฏิเสธ
         private bool[] plateSeen = new bool[3];   // index 1,2 = กล้องหน้า/หลังเจอป้ายไหม
         private DateTime lastPlateSeenAt = DateTime.MinValue;  // เวลาที่กล้องใดกล้องหนึ่งเห็นป้ายล่าสุด
 
@@ -158,7 +163,14 @@ namespace SmartGateLPR1
 
         private Label PlateLabel(int camId) => camId == 1 ? lblLicensePlate1 : lblLicensePlate2;
         private Label StatusLabel(int camId) => camId == 1 ? lblLprStatus1 : lblLprStatus2;
-        private int retryMaxSec = 20;    // มีบัตรแล้ว วนอ่านป้ายซ้ำได้นานสุดกี่วิ ก่อนยอมแพ้
+        // มีบัตรแล้วแต่ป้ายยังไม่ตรง จะวนอ่านซ้ำได้กี่รอบ / นานสุดกี่วิ ก่อนยอมแพ้
+        //
+        // เดิมให้เวลา 20 วินาที ซึ่งนานเกินไป — ถ้าอ่าน 2 รอบแล้วยังไม่ตรง
+        // รอบที่ 3-4 ก็มักได้ผลเดิม คนขับได้แต่จอดรอเปล่า ๆ
+        // ตอนนี้จำกัดทั้ง "จำนวนรอบ" และ "เวลา" อันไหนถึงก่อนถือว่าหมดสิทธิ์
+        private int retryMaxRounds = 2;  // อ่านซ้ำได้ 2 รอบ (ตั้ง 0 = ไม่อ่านซ้ำเลย)
+        private int retryMaxSec = 6;     // และต้องไม่เกินกี่วิ นับจากตอนแตะบัตร
+        private int retryCount = 0;      // นับรอบที่อ่านซ้ำไปแล้วของบัตรใบปัจจุบัน
         private bool sawMismatch = false;
 
 
@@ -788,7 +800,7 @@ namespace SmartGateLPR1
             timerGate.Stop();
             try { barrier?.Close(); } catch { }
             gateBusy = false;                              // พร้อมรับคันถัดไป
-            lock (hybridLock) { sawMismatch = false; plateSeenNoTagAt = DateTime.MinValue; }
+            lock (hybridLock) { sawMismatch = false; retryCount = 0; plateSeenNoTagAt = DateTime.MinValue; }
             // สำคัญ: ปลดล็อกป้ายที่ค้างไว้ของคันก่อนหน้า ไม่งั้นกล้องจะไม่อ่านป้ายให้คันถัดไปอีกเลย
             lastDecidedTag = logTag;
             lastDecidedAt = DateTime.Now;
@@ -823,10 +835,9 @@ namespace SmartGateLPR1
                     (DateTime.Now - lastDecidedAt).TotalSeconds < sameTagCooldownSec) return;
 
                 pendingRfidTag = tag;
-
-                pendingRfidTag = tag;
                 pendingRfidTime = DateTime.Now;
                 plateSeenNoTagAt = DateTime.MinValue;
+                retryCount = 0;              // บัตรใบใหม่ เริ่มนับรอบอ่านซ้ำใหม่
             }
             this.BeginInvoke(new Action(() =>
             {
@@ -945,7 +956,7 @@ namespace SmartGateLPR1
             {
                 lock (hybridLock)
                 {
-                    gateBusy = true; sawMismatch = false;
+                    gateBusy = true; sawMismatch = false; retryCount = 0;
                     pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
                 }
                 string which = (m1 && m2) ? "กล้องหน้า+หลัง" : (m1 ? "กล้องหน้า" : "กล้องหลัง");
@@ -958,7 +969,7 @@ namespace SmartGateLPR1
             {
                 lock (hybridLock)
                 {
-                    gateBusy = true; sawMismatch = false;
+                    gateBusy = true; sawMismatch = false; retryCount = 0;
                     pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
                 }
                 GrantAccess(owner, dbPlateShow, dbPerm, "อนุญาตด้วย RFID (ป้ายไม่ตรง อนุญาตตามนโยบาย)");
@@ -971,9 +982,15 @@ namespace SmartGateLPR1
             bool keepTrying;
             lock (hybridLock)
             {
-                keepTrying = (DateTime.Now - pendingRfidTime).TotalSeconds < retryMaxSec;
-                if (keepTrying) { pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; sawMismatch = true; }
-                else { gateBusy = true; pendingRfidTag = ""; sawMismatch = false; }
+                // หมดสิทธิ์อ่านซ้ำเมื่อ "ครบจำนวนรอบ" หรือ "หมดเวลา" อย่างใดอย่างหนึ่ง
+                keepTrying = retryCount < retryMaxRounds &&
+                             (DateTime.Now - pendingRfidTime).TotalSeconds < retryMaxSec;
+                if (keepTrying)
+                {
+                    retryCount++;
+                    pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; sawMismatch = true;
+                }
+                else { gateBusy = true; pendingRfidTag = ""; sawMismatch = false; retryCount = 0; }
             }
             if (keepTrying) ResetLprTurn();   // เคลียร์ล็อกป้ายเก่า ให้กล้องอ่านใหม่ได้จริงในรอบ retry
 
@@ -981,7 +998,8 @@ namespace SmartGateLPR1
                 ? $"ป้ายหน้า-หลังไม่ตรงกัน ({p1} / {p2}) — กำลังอ่านซ้ำ..."
                 : $"ป้ายที่อ่านได้ยังไม่ตรงบัตร ({dbPlate}) — กำลังอ่านซ้ำ...";
             if (keepTrying)
-                SetAccessUi("🔄 กำลังตรวจสอบใหม่...", Color.DarkOrange, Color.Red, dbPlate, "-", detail);
+                SetAccessUi($"🔄 กำลังตรวจสอบใหม่ (รอบ {retryCount}/{retryMaxRounds})...",
+                            Color.DarkOrange, Color.Red, dbPlate, "-", detail);
             else
                 DenyAccess(blockedByDisagree
                     ? "⛔ ป้ายหน้า-หลังไม่ตรงกัน (ตรวจสอบซ้ำแล้ว)"
@@ -1181,7 +1199,7 @@ namespace SmartGateLPR1
         private void GrantAccess(string owner, string plate, string permission,
                                  string detail = "ยืนยัน 2 ชั้นผ่าน (RFID + ป้ายทะเบียน)")
         {
-            lock (hybridLock) sawMismatch = false;      // ⬅️ เพิ่ม
+            lock (hybridLock) { sawMismatch = false; retryCount = 0; }
             string who = owner + (permission != "" ? $" ({permission})" : "");
             SetAccessUi("✅ อนุญาตให้เข้า", Color.Green, Color.LimeGreen, plate, who, detail);
             try { barrier?.Open(); } catch { }
@@ -1242,7 +1260,7 @@ namespace SmartGateLPR1
                 bool plateVisible = plateSeen[1] || plateSeen[2] ||
                                     (DateTime.Now - lastPlateSeenAt).TotalSeconds < 3;
 
-                // เคสA: มีบัตร + กล้องไม่เห็นป้ายเลยจริง ๆ + ครบ 10 วิ → อนุญาต (รถไม่ติดป้าย)
+                // เคสA: มีบัตร + กล้องไม่เห็นป้ายเลยจริง ๆ + ครบ noPlateGraceSec → อนุญาต (รถไม่ติดป้าย)
                 if (haveRfid && !havePlate && !plateVisible && !sawMismatch && allowNoPlate &&
                     (DateTime.Now - pendingRfidTime).TotalSeconds >= noPlateGraceSec)
                 {
@@ -1250,7 +1268,7 @@ namespace SmartGateLPR1
                     gateBusy = true;
                     pendingRfidTag = "";
                 }
-                // เคสA2: มีบัตร ไม่มีป้าย + สวิตช์ 2 ปิด + ครบ 15 วิ → ปฏิเสธ
+                // เคสA2: มีบัตร ไม่มีป้าย + สวิตช์ 2 ปิด + ครบ noPlateDenySec → ปฏิเสธ
                 else if (haveRfid && !havePlate && !sawMismatch && !allowNoPlate &&
                          (DateTime.Now - pendingRfidTime).TotalSeconds >= noPlateDenySec)
                 {
@@ -1278,7 +1296,7 @@ namespace SmartGateLPR1
                     gateBusy = true;
                     pendingRfidTag = "";
                     pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
-                    sawMismatch = false;
+                    sawMismatch = false; retryCount = 0;
                 }
                 // เคสC: มีป้าย ไม่มีบัตร
                 else if (havePlate && !haveRfid)
