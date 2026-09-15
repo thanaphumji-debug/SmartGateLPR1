@@ -70,6 +70,27 @@ namespace SmartGateLPR1
         private bool[] plateLocked = new bool[3];       // อ่านเลขได้แล้ว ค้างไว้ ไม่อ่านซ้ำ
         // เวลาที่ล็อกเลขของแต่ละกล้อง — ใช้คู่กับ relockRecheckSec ด้านล่าง
         private DateTime[] plateLockedAt = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+        // ส่งผลเข้าศูนย์ตัดสินใจไปแล้วหรือยัง (กล้องละครั้งเดียวต่อรถหนึ่งคัน)
+        //
+        // เดิมกล้องจะอ่านแล้วส่งซ้ำเรื่อย ๆ ทุก 2 วินาที ทำให้
+        //   - เปลืองรอบ OCR ทั้งที่ได้คำตอบที่ชัวร์แล้ว
+        //   - กล้องที่ยืนยันเสร็จก่อนสั่งตัดสินทันที อีกกล้องยังอ่านไม่ทัน
+        //     ผลที่โชว์จึงเป็น "ผ่านโดยกล้องหน้า" เสมอ ไม่เคยเป็น
+        //     "ทะเบียนหน้า-หลังตรงกัน" ทั้งที่กล้องทั้งสองอ่านได้เลขเดียวกัน
+        // ตอนนี้: มั่นใจแล้วส่งครั้งเดียว ขึ้นสถานะ "ตรวจสอบสำเร็จ" แล้วหยุด
+        // จนกว่าผลตัดสินจะออก (ResetLprTurn) หรือรถออกจากเฟรม (ResetLprTurnCam)
+        private bool[] plateSubmitted = new bool[3];
+        private DateTime[] plateSubmittedAt = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+        // ความมั่นใจสูงสุดของเลขที่กล้องนั้นยืนยัน (ใช้เลือกฝั่งที่น่าเชื่อกว่าตอนหน้า-หลังไม่ตรงกัน)
+        private double[] bestConf = new double[3];
+        // กันค้าง: ส่งไปแล้วแต่ผลตัดสินไม่ออกสักทีภายในกี่วินาที ให้กลับไปอ่านใหม่
+        private double submitHoldMaxSec = 8.0;
+        // ยืนยันได้กล้องแรกแล้ว รออีกกล้องอีกกี่วินาทีก่อนตัดสิน (ถ้าอีกกล้องเห็นป้ายอยู่)
+        // สั้น ๆ พอให้ได้ผลครบสองฝั่ง โดยไม่ถ่วงรถที่มีกล้องเห็นข้างเดียวจริง ๆ
+        // 2.5 วิ = เผื่อให้อีกกล้องอ่านครบ readsToConfirm รอบ (รอบละ ~1 วิ ตาม cooldownSeconds)
+        // ค่านี้ไม่ได้ถ่วงรถที่กล้องเห็นข้างเดียวจริง ๆ เพราะจะรอเฉพาะตอนอีกกล้อง
+        // "กำลังเห็นป้ายอยู่" และยังส่งผลไม่เสร็จเท่านั้น
+        private double bothCamWaitSec = 2.5;
         // ล็อกแล้วอ่านซ้ำเพื่อ "ตรวจทาน" ทุกกี่วินาที
         //
         // เดิมล็อกแล้วคือหยุดอ่านถาวร จนกว่าจะครบรอบเปิด-ปิดไม้กั้น (ResetLprTurn)
@@ -150,6 +171,7 @@ namespace SmartGateLPR1
         private string pendingRfidTag = "";
         private DateTime pendingRfidTime = DateTime.MinValue;
         private string[] pendingPlateCam = new string[] { "", "", "" };   // ป้ายล่าสุดต่อกล้อง [1]=หน้า [2]=หลัง
+        private double[] pendingPlateConf = new double[3];                // ความมั่นใจของป้ายนั้น
         private DateTime[] pendingPlateCamTime = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private readonly object hybridLock = new object();
         private bool gateBusy = false;                 // กันตัดสินซ้ำระหว่างไม้เปิดค้าง
@@ -862,12 +884,13 @@ namespace SmartGateLPR1
         }
 
         // จุดรับข้อมูลจาก LPR (เรียกตอนอ่านป้ายสำเร็จ)
-        public void OnPlateRead(string plate, int camId)
+        public void OnPlateRead(string plate, int camId, double conf = 0)
         {
             if (string.IsNullOrWhiteSpace(plate)) return;
             lock (hybridLock)
             {
                 pendingPlateCam[camId] = plate.Trim();
+                pendingPlateConf[camId] = conf;
                 pendingPlateCamTime[camId] = DateTime.Now;
                 if (requireRfid && pendingRfidTag == "" && plateSeenNoTagAt == DateTime.MinValue)   // ⬅️ เพิ่ม
                     plateSeenNoTagAt = DateTime.Now;                                                 // ⬅️ เพิ่ม
@@ -919,6 +942,40 @@ namespace SmartGateLPR1
             DecideLprOnly(p1, p2);                                    // ไม่มีบัตร (requireRfid=false) → LPR อย่างเดียว
         }
 
+        /// <summary>สรุปเป็นข้อความว่ากล้องหน้า-หลังอ่านได้ตรงกันไหม (ใช้ทั้งตอนอนุญาตและปฏิเสธ)</summary>
+        private string DescribePlates(string p1, string p2)
+        {
+            if (p1 != "" && p2 != "")
+                return NormPlate(p1) == NormPlate(p2)
+                    ? $"ทะเบียนหน้า-หลังตรงกัน ({p1})"
+                    : $"ทะเบียนหน้า-หลังไม่ตรงกัน (หน้า {p1} / หลัง {p2})";
+            if (p1 != "") return $"อ่านได้เฉพาะกล้องหน้า ({p1})";
+            if (p2 != "") return $"อ่านได้เฉพาะกล้องหลัง ({p2})";
+            return "ยังไม่ได้เลขทะเบียน";
+        }
+
+        /// <summary>ยืนยันได้กล้องเดียว แต่อีกกล้องกำลังเห็นป้ายอยู่และยังส่งไม่เสร็จ
+        /// → รออีกนิด จะได้ตัดสินจากข้อมูลครบสองฝั่ง (ไม่งั้นผลจะขึ้นว่า "ผ่านโดยกล้องหน้า"
+        /// เสมอ เพราะกล้องที่เสร็จก่อนสั่งตัดสินทันที) — รอสั้น ๆ ไม่เกิน bothCamWaitSec</summary>
+        private bool ShouldWaitForOtherCam(string p1, string p2)
+        {
+            if (p1 != "" && p2 != "") return false;          // ครบสองฝั่งแล้ว
+            if (p1 == "" && p2 == "") return false;          // ยังไม่มีสักฝั่ง
+            int other = (p1 != "") ? 2 : 1;
+            int mine = (p1 != "") ? 1 : 2;
+
+            bool otherSeeing;
+            lock (hybridLock) otherSeeing = plateSeen[other];
+            if (!otherSeeing) return false;                  // อีกกล้องไม่เห็นป้ายเลย ไม่ต้องรอ
+
+            lock (turnLock)
+            {
+                if (plateSubmitted[other]) return false;     // อีกกล้องส่งมาแล้ว (แต่ค่าหมดอายุ) ไม่ต้องรอ
+                if (plateSubmittedAt[mine] == DateTime.MinValue) return false;
+                return (DateTime.Now - plateSubmittedAt[mine]).TotalSeconds < bothCamWaitSec;
+            }
+        }
+
         // ---- โหมดมีบัตร (ไฮบริด) ----
         private void DecideWithRfid(string tag, string p1, string p2)
         {
@@ -947,15 +1004,10 @@ namespace SmartGateLPR1
             bool m1 = p1 != "" && NormPlate(p1) == NormPlate(dbPlate);
             bool m2 = p2 != "" && NormPlate(p2) == NormPlate(dbPlate);
 
-            // สวิตช์ 4 เปิด + อ่านได้แค่กล้องเดียว + อีกกล้องกำลังเห็นป้ายอยู่ → รอให้อ่านครบก่อน
-            // (ไม่งั้นกล้องแรกที่ตรงจะสั่งอนุญาตทันที สวิตช์ 4 จะไม่มีโอกาสทำงานเลย)
-            if (requirePlatesAgree && !bothRead && havePlate)
-            {
-                int other = (p1 != "") ? 2 : 1;
-                bool otherSeeing;
-                lock (hybridLock) otherSeeing = plateSeen[other];
-                if (otherSeeing && (DateTime.Now - pendingRfidTime).TotalSeconds < retryMaxSec) return;
-            }
+            // อ่านได้กล้องเดียวแต่อีกกล้องกำลังจะได้ → รออีกนิดให้ครบสองฝั่งก่อนตัดสิน
+            // (ทำทุกกรณี ไม่ใช่เฉพาะตอนเปิดสวิตช์ "ต้องตรงทั้ง 2 กล้อง" เหมือนเดิม
+            //  เพราะต่อให้นโยบายไม่บังคับ ผลที่แสดงก็ควรบอกได้ว่าหน้า-หลังตรงกันไหม)
+            if (ShouldWaitForOtherCam(p1, p2)) return;
 
             // สวิตช์ "ต้องตรงทั้ง 2 กล้อง" = บล็อกเฉพาะตอนอ่านได้ทั้งคู่แต่ขัดกัน
             // (รถติดป้ายด้านเดียว อีกกล้องอ่านไม่เจอ → ไม่ถือว่าขัด ยังผ่านได้)
@@ -967,10 +1019,14 @@ namespace SmartGateLPR1
                 lock (hybridLock)
                 {
                     gateBusy = true; sawMismatch = false; retryCount = 0;
-                    pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                    pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0;
                 }
-                string which = (m1 && m2) ? "กล้องหน้า+หลัง" : (m1 ? "กล้องหน้า" : "กล้องหลัง");
-                GrantAccess(owner, dbPlateShow, dbPerm, $"ยืนยันผ่าน {which} ตรงกับบัตร");
+                string note = DescribePlates(p1, p2);
+                // อ่านได้ทั้งคู่แต่คนละเลข แล้วนโยบายไม่ได้บังคับให้ตรงกัน → ผ่านด้วยฝั่งที่ตรงบัตร
+                // ต้องบอกให้ชัดว่าอีกฝั่งไม่ตรง ไม่ใช่กลบไว้เฉย ๆ
+                if (platesDisagree)
+                    note += (m1 && m2) ? "" : $" — ใช้ฝั่งที่ตรงกับบัตร (กล้อง{(m1 ? "หน้า" : "หลัง")})";
+                GrantAccess(owner, dbPlateShow, dbPerm, $"✔ {note} และตรงกับบัตร");
                 return;
             }
 
@@ -980,9 +1036,10 @@ namespace SmartGateLPR1
                 lock (hybridLock)
                 {
                     gateBusy = true; sawMismatch = false; retryCount = 0;
-                    pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                    pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0;
                 }
-                GrantAccess(owner, dbPlateShow, dbPerm, "อนุญาตด้วย RFID (ป้ายไม่ตรง อนุญาตตามนโยบาย)");
+                GrantAccess(owner, dbPlateShow, dbPerm,
+                            $"⚠️ {DescribePlates(p1, p2)} แต่ไม่ตรงกับบัตร — อนุญาตด้วย RFID ตามนโยบาย");
                 return;
             }
 
@@ -998,39 +1055,49 @@ namespace SmartGateLPR1
                 if (keepTrying)
                 {
                     retryCount++;
-                    pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; sawMismatch = true;
+                    pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0; sawMismatch = true;
                 }
                 else { gateBusy = true; pendingRfidTag = ""; sawMismatch = false; retryCount = 0; }
             }
             if (keepTrying) ResetLprTurn();   // เคลียร์ล็อกป้ายเก่า ให้กล้องอ่านใหม่ได้จริงในรอบ retry
 
             string detail = blockedByDisagree
-                ? $"ป้ายหน้า-หลังไม่ตรงกัน ({p1} / {p2}) — กำลังอ่านซ้ำ..."
-                : $"ป้ายที่อ่านได้ยังไม่ตรงบัตร ({dbPlate}) — กำลังอ่านซ้ำ...";
+                ? $"{DescribePlates(p1, p2)} — กำลังอ่านซ้ำ..."
+                : $"{DescribePlates(p1, p2)} แต่ไม่ตรงกับบัตร ({dbPlate}) — กำลังอ่านซ้ำ...";
             if (keepTrying)
                 SetAccessUi($"🔄 กำลังตรวจสอบใหม่ (รอบ {retryCount}/{retryMaxRounds})...",
                             Color.DarkOrange, Color.Red, dbPlate, "-", detail);
             else
                 DenyAccess(blockedByDisagree
-                    ? "⛔ ป้ายหน้า-หลังไม่ตรงกัน (ตรวจสอบซ้ำแล้ว)"
-                    : "⛔ ป้ายทะเบียนไม่ตรงกับบัตร (ตรวจสอบซ้ำแล้ว)");
+                    ? $"⛔ {DescribePlates(p1, p2)} (ตรวจสอบซ้ำแล้ว)"
+                    : $"⛔ {DescribePlates(p1, p2)} ไม่ตรงกับบัตร {dbPlate} (ตรวจสอบซ้ำแล้ว)");
         }
 
         // ---- โหมด LPR อย่างเดียว (ไม่มีบัตร): ป้ายตรงฐานข้อมูล = ผ่าน ----
         private void DecideLprOnly(string p1, string p2)
         {
+            // อ่านได้กล้องเดียวแต่อีกกล้องกำลังจะได้ → รออีกนิดให้ครบสองฝั่ง (เหมือนโหมดไฮบริด)
+            if (ShouldWaitForOtherCam(p1, p2)) return;
+
             logMode = "LPR"; logTag = ""; logPlate1 = p1; logPlate2 = p2;
             logPlateDb = ""; logProvince = ""; logOwner = ""; logPermission = "";
             // สวิตช์ 4: อ่านได้ทั้ง 2 กล้องแต่เลขคนละอัน → ปฏิเสธ (กันปลอมป้าย) ในโหมด LPR ล้วนด้วย
             bool bothRead = p1 != "" && p2 != "";
             if (requirePlatesAgree && bothRead && NormPlate(p1) != NormPlate(p2))
             {
-                lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; }
-                DenyAccess($"⛔ ป้ายหน้า-หลังไม่ตรงกัน ({p1} / {p2})");
+                lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0; }
+                DenyAccess($"⛔ {DescribePlates(p1, p2)}");
                 return;
             }
 
-            foreach (var item in new[] { (plate: p1, cam: "หน้า"), (plate: p2, cam: "หลัง") })
+            // หน้า-หลังไม่ตรงกันแต่นโยบายไม่ได้บังคับ → ลองฝั่งที่ OCR มั่นใจกว่าก่อน
+            double c1, c2;
+            lock (hybridLock) { c1 = pendingPlateConf[1]; c2 = pendingPlateConf[2]; }
+            var order = (bothRead && NormPlate(p1) != NormPlate(p2) && c2 > c1)
+                ? new[] { (plate: p2, cam: "หลัง"), (plate: p1, cam: "หน้า") }
+                : new[] { (plate: p1, cam: "หน้า"), (plate: p2, cam: "หลัง") };
+
+            foreach (var item in order)
             {
                 if (string.IsNullOrEmpty(item.plate)) continue;
                 DataTable dt = db.GetUserByPlate(NormPlate(item.plate));
@@ -1044,14 +1111,15 @@ namespace SmartGateLPR1
                     logPlateDb = row["plate_number"]?.ToString() ?? ""; logProvince = dbProv;
                     logOwner = owner; logPermission = perm;
                     if (dbProv != "") dbPlate = dbPlate + " " + dbProv;
-                    lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; }
-                    GrantAccess(owner, dbPlate, perm, $"✔ ผ่านด้วยป้ายทะเบียน (กล้อง{item.cam}) — โหมดไม่ใช้ RFID");
+                    lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0; }
+                    GrantAccess(owner, dbPlate, perm,
+                                $"✔ {DescribePlates(p1, p2)} — ผ่านด้วยเลขจากกล้อง{item.cam} (โหมดไม่ใช้ RFID)");
                     return;
                 }
             }
             // ไม่มีป้ายที่ลงทะเบียนในระบบ → ปฏิเสธ (มีป้ายให้เทียบแล้ว แต่ไม่พบข้อมูล)
-            lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; }
-            DenyAccess("⛔ ปฏิเสธ — ไม่พบข้อมูลในระบบ");
+            lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0; }
+            DenyAccess($"⛔ {DescribePlates(p1, p2)} — ไม่พบข้อมูลในระบบ");
         }
 
         // ปุ่ม "ประวัติการเข้า-ออก" ในโซนอนุญาต (สร้างด้วยโค้ด ไม่ต้องเพิ่มใน Designer)
@@ -1305,7 +1373,7 @@ namespace SmartGateLPR1
                     tagMismatchDeny = pendingRfidTag;
                     gateBusy = true;
                     pendingRfidTag = "";
-                    pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                    pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0;
                     sawMismatch = false; retryCount = 0;
                 }
                 // เคสC: มีป้าย ไม่มีบัตร
@@ -1318,7 +1386,7 @@ namespace SmartGateLPR1
                         plateNoTagDeny = true;
                         gateBusy = true;
                         noTagP1 = pendingPlateCam[1]; noTagP2 = pendingPlateCam[2];
-                        pendingPlateCam[1] = ""; pendingPlateCam[2] = "";
+                        pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0;
                         plateSeenNoTagAt = DateTime.MinValue;
                     }
                     else
@@ -1343,6 +1411,17 @@ namespace SmartGateLPR1
             }
             else if (noPlateDeny)                                              // ⬅️ เพิ่ม
                 DenyAccess("⛔ ไม่พบป้ายทะเบียน ");
+            else
+            {
+                // กระตุ้นให้ตัดสินอีกครั้ง — จำเป็นเพราะตอนนี้กล้องส่งผลเข้ามาแค่ครั้งเดียว
+                // (plateSubmitted) ถ้ารอบแรกเจอ ShouldWaitForOtherCam แล้วถอยออกไป
+                // จะไม่มีใครเรียก TryDecide ให้อีกเลยจนกว่าจะหมดเวลาเป็นวินาที
+                // ตัวจับเวลานี้เต้นทุก 1 วินาที เรียกซ้ำได้ปลอดภัย (TryDecide
+                // เช็คเงื่อนไขครบเองและถอยออกเมื่อยังไม่ถึงเวลา)
+                bool anyPlate;
+                lock (hybridLock) anyPlate = pendingPlateCam[1] != "" || pendingPlateCam[2] != "";
+                if (anyPlate) TryDecide();
+            }
         }
 
         private void label3_Click_1(object sender, EventArgs e)
@@ -1363,6 +1442,14 @@ namespace SmartGateLPR1
         {
             lock (turnLock)
             {
+                // ส่งผลเข้าศูนย์ตัดสินใจไปแล้ว → หยุดอ่าน รอผลตัดสิน
+                // (มีเพดานเวลากันค้าง เผื่อมีเส้นทางที่ผลไม่ออกสักที)
+                if (plateSubmitted[camId])
+                {
+                    if ((DateTime.Now - plateSubmittedAt[camId]).TotalSeconds < submitHoldMaxSec)
+                        return false;
+                    plateSubmitted[camId] = false;   // รอนานผิดปกติ กลับไปอ่านใหม่
+                }
                 if (plateLocked[camId])
                 {
                     // ยังไม่ถึงเวลาตรวจทาน → พักไว้ก่อน ไม่เปลืองรอบ OCR
@@ -1405,7 +1492,7 @@ namespace SmartGateLPR1
 
         /// <summary>นับผลอ่าน คืน true เมื่อ "ยืนยันแล้ว" (อ่านได้เลขเดิมซ้ำครบตามกำหนด)
         /// ถ้ายังไม่ยืนยัน กล้องนี้จะถือคิวต่อ อ่านซ้ำจนกว่าจะชัวร์</summary>
-        private bool ReleaseLprTurn(int camId, string plateRead, out bool plateChanged)
+        private bool ReleaseLprTurn(int camId, string plateRead, double conf, out bool plateChanged)
         {
             plateChanged = false;
             lock (turnLock)
@@ -1417,6 +1504,8 @@ namespace SmartGateLPR1
                     if (plateRead == lastReadPlate[camId])
                     {
                         confirmCount[camId]++;
+                        // เก็บค่าที่มั่นใจที่สุดของเลขนี้ไว้ส่งให้ศูนย์ตัดสินใจ
+                        if (conf > bestConf[camId]) bestConf[camId] = conf;
                     }
                     else
                     {
@@ -1426,6 +1515,7 @@ namespace SmartGateLPR1
                         lastReadPlate[camId] = plateRead;
                         confirmCount[camId] = 1;
                         plateLocked[camId] = false;
+                        bestConf[camId] = conf;
                     }
 
                     if (confirmCount[camId] >= readsToConfirm)
@@ -1452,6 +1542,9 @@ namespace SmartGateLPR1
                 lastReadPlate[1] = lastReadPlate[2] = "";
                 confirmCount[1] = confirmCount[2] = 0;
                 plateLockedAt[1] = plateLockedAt[2] = DateTime.MinValue;
+                plateSubmitted[1] = plateSubmitted[2] = false;
+                plateSubmittedAt[1] = plateSubmittedAt[2] = DateTime.MinValue;
+                bestConf[1] = bestConf[2] = 0;
             }
         }
 
@@ -1466,6 +1559,9 @@ namespace SmartGateLPR1
                 lastReadPlate[camId] = "";
                 confirmCount[camId] = 0;
                 plateLockedAt[camId] = DateTime.MinValue;
+                plateSubmitted[camId] = false;
+                plateSubmittedAt[camId] = DateTime.MinValue;
+                bestConf[camId] = 0;
             }
         }
 
@@ -1523,26 +1619,47 @@ namespace SmartGateLPR1
                             //  โชว์ตอนอนุญาตใช้ค่าจากฐานข้อมูลที่ลงทะเบียนไว้แทน)
                             string plateText = (string)result.text;
                             string camName = camId == 1 ? "หน้า" : "หลัง";
+                            double conf = 0;
+                            try { if (result.confidence != null) conf = (double)result.confidence; } catch { }
 
                             // นับยืนยันก่อน — ส่งเข้าระบบตัดสินเฉพาะเลขที่ชัวร์แล้วเท่านั้น
-                            bool confirmed = ReleaseLprTurn(camId, plateText, out bool plateChanged);
+                            bool confirmed = ReleaseLprTurn(camId, plateText, conf, out bool plateChanged);
                             // อ่านได้คนละเลขกับของเดิม = คันก่อนหน้าไปแล้ว ผลเก่าที่ค้าง
                             // อยู่ในศูนย์ตัดสินใจใช้ไม่ได้อีกแล้ว ต้องล้างทันที ไม่งั้นถ้ามี
                             // บัตรแตะเข้ามาตอนนี้ จะเอาเลขของคันก่อนไปเทียบกับบัตร
                             if (plateChanged)
                             {
-                                lock (hybridLock) pendingPlateCam[camId] = "";
+                                lock (hybridLock) { pendingPlateCam[camId] = ""; pendingPlateConf[camId] = 0; }
                             }
                             int seenTimes;
-                            lock (turnLock) seenTimes = confirmCount[camId];
+                            double sendConf;
+                            // ยืนยันแล้วให้ "ส่งครั้งเดียว" — ตั้งธงตรงนี้ใต้ล็อกเดียวกับที่อ่านค่า
+                            // กันกรณีสองรอบอ่านจบพร้อมกันแล้วส่งซ้ำ
+                            bool submitNow = false;
+                            lock (turnLock)
+                            {
+                                seenTimes = confirmCount[camId];
+                                sendConf = bestConf[camId];
+                                if (confirmed && !plateSubmitted[camId])
+                                {
+                                    plateSubmitted[camId] = true;
+                                    plateSubmittedAt[camId] = DateTime.Now;
+                                    submitNow = true;
+                                }
+                            }
 
                             this.Invoke((MethodInvoker)delegate
                             {
                                 SetPlateText(camId, plateText);
-                                if (confirmed)
+                                if (submitNow)
                                 {
-                                    SetLprStatus(camId, $"✅ ยืนยันแล้ว (กล้อง{camName})", Color.Green);
-                                    OnPlateRead(plateText, camId);
+                                    SetLprStatus(camId, $"✅ ตรวจสอบสำเร็จ — ส่งให้ระบบตัดสินแล้ว (กล้อง{camName})",
+                                                 Color.Green);
+                                    OnPlateRead(plateText, camId, sendConf);
+                                }
+                                else if (confirmed)
+                                {
+                                    SetLprStatus(camId, $"✅ ตรวจสอบสำเร็จ — รอผลตัดสิน (กล้อง{camName})", Color.Green);
                                 }
                                 else
                                 {
@@ -1594,7 +1711,7 @@ namespace SmartGateLPR1
             {
                 isAIProcessing = false; // ปลดล็อกคิวรับรูปใหม่
                 bitmap.Dispose();       // 💡 เคลียร์ขยะรูปนี้ออกจาก RAM ทันที
-                ReleaseLprTurn(camId, "", out _);
+                ReleaseLprTurn(camId, "", 0, out _);
             }
         }
 
