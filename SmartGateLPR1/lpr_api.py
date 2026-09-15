@@ -1,6 +1,18 @@
 ﻿# -*- coding: utf-8 -*-
 import os
 import threading
+import io
+import time
+import sys
+
+import cv2
+import numpy as np
+import torch
+from flask import Flask, request, jsonify
+from ultralytics import YOLO
+
+from thai_plate import parse_plate_lines
+
 model_lock = threading.RLock()
 
 # ---------- ให้สิทธิ์ /predict (อ่านตัวอักษร) มาก่อน /detect (กรอบโชว์บนจอ) ----------
@@ -18,17 +30,7 @@ _predict_lock = threading.Lock()
 def _predict_busy():
     with _predict_lock:
         return _predict_pending > 0
-import io
-import time
-import sys
 
-import cv2
-import numpy as np
-import torch
-from flask import Flask, request, jsonify
-from ultralytics import YOLO
-
-from thai_plate import parse_plate_lines
 
 # บังคับ stdout เป็น UTF-8 กันภาษาไทยเพี้ยนบน Windows
 try:
@@ -59,6 +61,26 @@ DETECT_CONF = 0.25                           # เกณฑ์ความมั
 #   ถ้ากล้องตั้งใกล้และป้ายใหญ่เต็มเฟรมเสมอ ลดเป็น 960 ได้ (เร็วขึ้น ~30%)
 #   แต่อย่าลดเหลือ 640 ถ้ารถต้องถูกตรวจจับตั้งแต่ยังอยู่ไกล
 DETECT_IMGSZ = int(os.environ.get("LPR_IMGSZ", "1280"))
+
+# ขนาดภาพตอน "เกาะติด" ป้ายที่เจอไปแล้ว (ตั้งทับได้ด้วย LPR_TRACK_IMGSZ)
+#
+# ตอนยังไม่เจอป้าย เราอยากได้ความไวสูงสุดเพื่อจับรถที่เพิ่งเข้ามาไกล ๆ ให้ได้
+# เร็วที่สุด จึงใช้ DETECT_IMGSZ (1280) แต่พอล็อกป้ายได้แล้ว ป้ายอยู่ใกล้และ
+# ใหญ่พอสมควรแล้ว ไม่ต้องใช้ความละเอียดสูงขนาดนั้นอีก สลับมาใช้ค่านี้แทนเพื่อ
+# ให้กรอบเกาะตามป้ายได้ลื่นขึ้นมาก
+#
+# วัดจริงกับ plate_detector.pt บนเฟรม 1280x720 (ขนาดกล้องทั่วไป):
+#
+#   imgsz   เวลา/ครั้ง   ครั้ง/วินาที   conf ตอนป้ายใกล้   conf ตอนป้ายเล็ก 20px
+#    1280     188 ms        5.3           0.852               0.669
+#     960      59 ms       17.0           0.827               0.260  <-- เริ่มหลุด
+#     736      40 ms       24.8           0.828               0.273
+#     640      36 ms       28.1           0.822               0.322
+#
+# 960 เร็วกว่า 1280 ถึง 3.2 เท่าโดย conf ตอนป้ายใกล้แทบไม่ต่าง (0.827 vs 0.852)
+# เสียแค่ความไวตอนป้ายเล็กมาก ซึ่งไม่สำคัญในโหมดเกาะติด เพราะกว่าจะถึงโหมดนี้
+# ก็เจอป้ายไปแล้ว
+TRACK_IMGSZ = int(os.environ.get("LPR_TRACK_IMGSZ", "960"))
 CROP_PADDING = 12                             # ขยายกรอบ crop เล็กน้อย (พิกเซล)
 # สัดส่วนกว้าง/สูงขั้นต่ำของกรอบที่ถือว่า "น่าจะเป็นป้ายจริง"
 # ป้ายไทยจริงกว้างกว่าสูงชัดเจน วัดจากภาพทดสอบได้ ~1.6 เท่าขึ้นไป
@@ -182,10 +204,15 @@ def _extract_lines(result):
     lines.sort(key=lambda x: x[2])   # บนลงล่าง
     return lines
 
-def detect_best_plate(frame):
-    """รัน YOLO หาป้าย คืน [x1,y1,x2,y2] ของกล่องที่มั่นใจสุด หรือ None ถ้าไม่เจอ"""
+def detect_best_plate(frame, imgsz=None):
+    """
+    รัน YOLO หาป้าย คืน [x1,y1,x2,y2] ของกล่องที่มั่นใจสุด หรือ None ถ้าไม่เจอ
+
+    imgsz: ไม่ใส่ = ใช้ DETECT_IMGSZ (ความไวสูงสุด สำหรับตอนค้นหาป้ายครั้งแรก)
+           ใส่ TRACK_IMGSZ = โหมดเกาะติดป้ายที่เจอแล้ว เร็วกว่ามาก
+    """
     with model_lock:
-       det = detector(frame, conf=DETECT_CONF, imgsz=DETECT_IMGSZ, half=False, verbose=False, device=YOLO_DEVICE)
+       det = detector(frame, conf=DETECT_CONF, imgsz=imgsz or DETECT_IMGSZ, half=False, verbose=False, device=YOLO_DEVICE)
     boxes = det[0].boxes
     if boxes is None or len(boxes) == 0:
         return None
@@ -325,7 +352,13 @@ def detect():
     try:
         file_bytes = np.frombuffer(request.files["image"].read(), np.uint8)
         frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        box = detect_best_plate(frame)
+        # ฝั่ง C# บอกมาว่ากล้องตัวนี้ "เกาะติดป้ายอยู่แล้ว" หรือ "ยังค้นหาอยู่"
+        # (ฝั่งนั้นรู้อยู่แล้วจาก hasPlateBox จึงไม่ต้องให้ Python จำสถานะเอง
+        #  — ไม่มี state ค้าง ไม่ต้องกังวลเรื่อง thread safety)
+        #   ค้นหาอยู่   -> ใช้ DETECT_IMGSZ (ช้าแต่ไว) จับรถที่เพิ่งเข้ามาไกล ๆ ให้เร็วที่สุด
+        #   เกาะติดแล้ว -> ใช้ TRACK_IMGSZ (เร็วกว่า 3 เท่า) ให้กรอบตามป้ายลื่น ๆ
+        tracking = request.form.get("tracking") == "1"
+        box = detect_best_plate(frame, imgsz=TRACK_IMGSZ if tracking else None)
         # ไม่พิมพ์ log ทุกครั้งที่เรียก — endpoint นี้ถูกยิงหลายครั้งต่อวินาทีต่อกล้อง
         # การเขียน console บน Windows ช้ากว่าที่คิด (บล็อกจริง) และทำให้ log จมจน
         # หา error ที่สำคัญไม่เจอ  เปิดดูได้ด้วย LPR_DEBUG_PLATE=1 ถ้าต้องการ

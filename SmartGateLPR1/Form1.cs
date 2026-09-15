@@ -79,12 +79,17 @@ namespace SmartGateLPR1
         private DateTime[] lastDetectTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private bool[] isDetecting = new bool[3];
         private readonly object boxLock = new object();
-        // ยิง /detect ถี่แค่ไหน (ต่อกล้อง) — ค่าเดิม 66ms = 15 ครั้ง/วินาที/กล้อง
-        // รวม 2 กล้อง = 30 ครั้ง/วินาที ซึ่งเกินกำลังเครื่องมาก (วัดจริงแล้ว /detect
-        // ใช้เวลา ~0.2 วินาที/ครั้ง → ต้องการเวลาประมวลผล 6 วินาที ต่อเวลาจริง 1 วินาที)
-        // งานตรวจจับจึงยึดโมเดลไว้ตลอดจนงานอ่านตัวอักษรไม่ได้รัน = เห็นกรอบแต่
-        // ตัวอักษรไม่ขึ้น  200ms (5 ครั้ง/วินาที) ลื่นพอสำหรับรถที่ค่อย ๆ เข้ามาจอด
-        private int detectIntervalMs = 200;
+        // ยิง /detect ถี่แค่ไหน (ต่อกล้อง)
+        //
+        // เดิม 66ms (15 ครั้ง/วินาที/กล้อง = 30 ครั้ง/วินาทีรวม 2 กล้อง) ซึ่งเกินกำลัง
+        // เครื่องมาก เพราะตอนนั้น /detect ใช้ความละเอียดเต็ม 1280 = ~0.19 วินาที/ครั้ง
+        // → ต้องการเวลาประมวลผล ~6 วินาที ต่อเวลาจริง 1 วินาที งานตรวจจับจึงยึดโมเดล
+        // ไว้ตลอดจนงานอ่านตัวอักษรไม่ได้รันเลย
+        //
+        // ตอนนี้ฝั่ง AI สลับความละเอียดเองตามสถานะ (ดูฟิลด์ tracking ใน DetectBox)
+        // พอเกาะติดป้ายได้แล้วจะเหลือ ~0.06 วินาที/ครั้ง จึงยิงถี่ขึ้นได้ในงบเท่าเดิม
+        // 100ms = 10 ครั้ง/วินาที/กล้อง กรอบตามป้ายลื่นขึ้นเท่าตัวจาก 200ms
+        private int detectIntervalMs = 100;
         // กรอบค้างบนจอได้นานแค่ไหนหลังผลตรวจจับล่าสุด — ต้องยาวกว่าช่วงที่ /detect
         // หยุดหลบให้ /predict (อ่านป้ายใช้เวลา ~2 วินาที) ไม่งั้นกรอบจะหายวับ
         // ระหว่างกำลังอ่านป้าย แล้วโผล่กลับมาใหม่ ดูเหมือนกระพริบ
@@ -1550,6 +1555,18 @@ namespace SmartGateLPR1
                         bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                         var content = new MultipartFormDataContent();
                         content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
+
+                        // บอกฝั่ง AI ว่ากล้องนี้กำลัง "เกาะติด" ป้ายที่เจอแล้วอยู่หรือเปล่า
+                        //   เกาะติดอยู่ -> ฝั่งนั้นใช้ความละเอียดต่ำลง เร็วขึ้น ~3 เท่า
+                        //                  กรอบจึงตามป้ายได้ลื่นขึ้นมาก
+                        //   ยังไม่เจอ   -> ใช้ความละเอียดเต็ม จับรถที่เพิ่งเข้ามาไกล ๆ ให้ไวที่สุด
+                        bool tracking;
+                        lock (boxLock)
+                        {
+                            tracking = hasPlateBox[camId] &&
+                                       (DateTime.Now - latestBoxTime[camId]).TotalMilliseconds < 1000;
+                        }
+                        content.Add(new StringContent(tracking ? "1" : "0"), "tracking");
 
                         var response = await client.PostAsync("http://localhost:5000/detect", content);
                         var json = await response.Content.ReadAsStringAsync();
