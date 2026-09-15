@@ -137,7 +137,6 @@ namespace SmartGateLPR1
         private string pendingRfidTag = "";
         private DateTime pendingRfidTime = DateTime.MinValue;
         private string[] pendingPlateCam = new string[] { "", "", "" };   // ป้ายล่าสุดต่อกล้อง [1]=หน้า [2]=หลัง
-        private string[] pendingProvCam = new string[] { "", "", "" };
         private DateTime[] pendingPlateCamTime = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
         private readonly object hybridLock = new object();
         private bool gateBusy = false;                 // กันตัดสินซ้ำระหว่างไม้เปิดค้าง
@@ -147,7 +146,6 @@ namespace SmartGateLPR1
         private int hybridWindowSec = 10;              // สองฝั่งต้องมาห่างกันไม่เกินกี่วินาที
         private int noPlateGraceSec = 7;     // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน
         private int noPlateDenySec = 9;      // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปฏิเสธ (สวิตช์ 2 ปิด)
-        private bool strictProvince = false;           // true = จังหวัดต้องตรงด้วยถึงเปิด
         private bool requireRfid = true;
         private bool allowNoPlate = true;
         private bool requirePlatesAgree = false;
@@ -851,13 +849,12 @@ namespace SmartGateLPR1
         }
 
         // จุดรับข้อมูลจาก LPR (เรียกตอนอ่านป้ายสำเร็จ)
-        public void OnPlateRead(string plate, string province, int camId)
+        public void OnPlateRead(string plate, int camId)
         {
             if (string.IsNullOrWhiteSpace(plate)) return;
             lock (hybridLock)
             {
                 pendingPlateCam[camId] = plate.Trim();
-                pendingProvCam[camId] = (province ?? "").Trim();
                 pendingPlateCamTime[camId] = DateTime.Now;
                 if (requireRfid && pendingRfidTag == "" && plateSeenNoTagAt == DateTime.MinValue)   // ⬅️ เพิ่ม
                     plateSeenNoTagAt = DateTime.Now;                                                 // ⬅️ เพิ่ม
@@ -1471,10 +1468,11 @@ namespace SmartGateLPR1
                         dynamic result = JsonConvert.DeserializeObject(jsonResponse);
                         if (result != null && result.status == "success")
                         {
+                            // อ่านเฉพาะเลขทะเบียน — ฝั่ง AI ไม่ส่งชื่อจังหวัดมาแล้ว
+                            // (ตัดการอ่านจังหวัดออกเมื่อ 2569-09-15 เพราะอ่านไม่นิ่ง
+                            //  และไม่เคยถูกใช้ตัดสินเปิด-ปิดไม้กั้นอยู่แล้ว — จังหวัดที่
+                            //  โชว์ตอนอนุญาตใช้ค่าจากฐานข้อมูลที่ลงทะเบียนไว้แทน)
                             string plateText = (string)result.text;
-                            string fullText = result.full_text != null ? (string)result.full_text : plateText;
-
-                            string provinceRead = result.province != null ? (string)result.province : "";
                             string camName = camId == 1 ? "หน้า" : "หลัง";
 
                             // นับยืนยันก่อน — ส่งเข้าระบบตัดสินเฉพาะเลขที่ชัวร์แล้วเท่านั้น
@@ -1484,11 +1482,11 @@ namespace SmartGateLPR1
 
                             this.Invoke((MethodInvoker)delegate
                             {
-                                SetPlateText(camId, fullText);
+                                SetPlateText(camId, plateText);
                                 if (confirmed)
                                 {
                                     SetLprStatus(camId, $"✅ ยืนยันแล้ว (กล้อง{camName})", Color.Green);
-                                    OnPlateRead(plateText, provinceRead, camId);
+                                    OnPlateRead(plateText, camId);
                                 }
                                 else
                                 {
@@ -1499,7 +1497,7 @@ namespace SmartGateLPR1
 
                             lock (boxLock)
                             {
-                                latestPlateText[camId] = fullText;
+                                latestPlateText[camId] = plateText;
                                 if (result.box != null)
                                 {
                                     int bx1 = (int)result.box[0], by1 = (int)result.box[1];

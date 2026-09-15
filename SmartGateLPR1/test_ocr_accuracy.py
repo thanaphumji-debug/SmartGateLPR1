@@ -6,7 +6,8 @@
 -------
 1. วางภาพลงโฟลเดอร์ test_images  (ภาพเต็มฉากก็ได้ เดี๋ยวสคริปต์ crop ให้เอง)
 2. ตั้งชื่อไฟล์เป็นเลขทะเบียนจริงเพื่อให้วัดความแม่นยำได้ เช่น  กย3779.jpg
-   ถ้าอยากวัดจังหวัดด้วย ใส่ต่อหลังขีดล่าง เช่น  กย3779_กาญจนบุรี.jpg
+   ใส่ชื่อจังหวัดต่อท้ายหลังขีดล่างได้ (เช่น กย3779_กาญจนบุรี.jpg) แต่จะถูก
+   มองข้าม เพราะระบบเลิกอ่านชื่อจังหวัดแล้ว วัดเฉพาะเลขทะเบียนอย่างเดียว
    (ไฟล์ที่ชื่อไม่ใช่ภาษาไทย จะรายงานผลที่อ่านได้เฉย ๆ ไม่คิดเปอร์เซ็นต์)
 3. รัน:  python test_ocr_accuracy.py
 
@@ -72,7 +73,6 @@ def main():
     n_total = len(files)
     n_found = n_read = 0            # เจอป้าย / อ่านออก
     n_graded = n_plate_ok = 0       # มีเฉลย / ทะเบียนถูก
-    n_prov_graded = n_prov_ok = 0   # มีเฉลยจังหวัด / จังหวัดถูก
     t_detect = t_read = 0.0
 
     for fname in files:
@@ -86,9 +86,8 @@ def main():
         stem = os.path.splitext(fname)[0]
         parts = stem.split("_")
         truth_plate = norm(parts[0]) if is_thai(parts[0]) else ""
-        truth_prov = parts[1] if len(parts) > 1 and is_thai(parts[1]) else ""
 
-        row = {"ไฟล์": fname, "เฉลยทะเบียน": truth_plate, "เฉลยจังหวัด": truth_prov}
+        row = {"ไฟล์": fname, "เฉลยทะเบียน": truth_plate}
 
         t0 = time.time()
         plate_img = crop_plate(frame)
@@ -107,7 +106,7 @@ def main():
         t0 = time.time()
         raw_lines = []
         try:
-            text, province, conf, raw_lines = lpr_api.read_plate_paddle(plate_img, return_raw=True)
+            text, conf, raw_lines = lpr_api.read_plate_paddle(plate_img, return_raw=True)
 
             # กัน YOLO ตัดกรอบพลาด — เหมือนที่ /predict ใน lpr_api.py ทำ
             # (ห้ามเช็คแค่ "text ว่างไหม" เพราะกรอบที่ตัดขาดยังอ่านออกมาเป็น
@@ -116,44 +115,39 @@ def main():
             crop_ratio = pw / max(1, ph)
             suspicious = crop_ratio < lpr_api.MIN_PLATE_ASPECT or not text or len(text) < 5
             if suspicious:
-                alt_text, alt_province, alt_conf, alt_raw = lpr_api.read_plate_paddle(
+                alt_text, alt_conf, alt_raw = lpr_api.read_plate_paddle(
                     frame, return_raw=True)
                 if alt_text and (not text or len(alt_text) > len(text)):
-                    text, province, conf = alt_text, alt_province, alt_conf
+                    text, conf = alt_text, alt_conf
                     raw_lines = alt_raw
             err = ""
         except Exception as e:
-            text, province, conf, err = "", "", 0.0, str(e)
+            text, conf, err = "", 0.0, str(e)
         dt_read = time.time() - t0
         t_read += dt_read
 
         if text:
             n_read += 1
         plate_ok = bool(truth_plate) and norm(text) == truth_plate
-        prov_ok = bool(truth_prov) and province == truth_prov
         if truth_plate:
             n_graded += 1
             n_plate_ok += int(plate_ok)
-        if truth_prov:
-            n_prov_graded += 1
-            n_prov_ok += int(prov_ok)
 
         # ข้อความดิบทุกบรรทัดที่ PaddleOCR เห็น (ก่อนดัดด้วย thai_plate.py) —
         # ไว้วินิจฉัยตอนจังหวัด/ทะเบียนผิดว่า OCR ไม่เจอบรรทัดนั้นเลย
         # หรือเจอแต่ดัดไม่ตรง (สองสาเหตุนี้แก้คนละจุดกัน)
         raw_str = " | ".join(f"{t!r}({sc:.2f})" for t, sc, _ in raw_lines)
 
-        row.update({"ทะเบียนที่อ่านได้": text, "จังหวัดที่อ่านได้": province,
+        row.update({"ทะเบียนที่อ่านได้": text,
                     "conf": round(conf, 4),
                     "วินาที_ตรวจจับ": round(dt_det, 3), "วินาที_อ่าน": round(dt_read, 3),
                     "ทะเบียนถูก": ("✓" if plate_ok else "✗") if truth_plate else "",
-                    "จังหวัดถูก": ("✓" if prov_ok else "✗") if truth_prov else "",
                     "ข้อความดิบจาก_OCR": raw_str,
                     "หมายเหตุ": err})
         rows.append(row)
 
         mark = ("✓" if plate_ok else "✗") if truth_plate else " "
-        print(f"{mark} {fname:28} '{text}' | {province} | conf {conf:.2f} | "
+        print(f"{mark} {fname:28} '{text}' | conf {conf:.2f} | "
               f"ตรวจจับ {dt_det:.2f}s + อ่าน {dt_read:.2f}s")
         print(f"     ดิบจาก OCR: {raw_str or '(ไม่เจอข้อความเลย)'}")
 
@@ -166,7 +160,6 @@ def main():
     print(f"  ตรวจจับเจอป้าย   {pct(n_found, n_total)}")
     print(f"  อ่านตัวอักษรออก  {pct(n_read, n_total)}")
     print(f"  ทะเบียนถูกต้อง   {pct(n_plate_ok, n_graded)}")
-    print(f"  จังหวัดถูกต้อง   {pct(n_prov_ok, n_prov_graded)}")
     if n_total:
         print(f"  เวลาเฉลี่ย       ตรวจจับ {t_detect / n_total:.2f}s + "
               f"อ่าน {t_read / max(1, n_found):.2f}s")

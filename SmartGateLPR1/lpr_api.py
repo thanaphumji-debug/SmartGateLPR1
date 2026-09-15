@@ -111,8 +111,8 @@ MIN_PLATE_ASPECT = 1.3
 # (ให้ PaddleOCR ขยายเองแบบไม่จำกัด, เทียบกับ limit_side_len=736):
 #
 #   ไฟล์                      สูงก่อนขยาย  อัตราขยายตอนนั้น  ผล
-#   578A495.jpg (fallback)        289          2.55x        province ถูก (conf 0.99)
-#   S__17285141.jpg (crop ตรง)    144          5.11x        province ถูก (fuzzy match กู้ได้)
+#   578A495.jpg (fallback)        289          2.55x        อ่านครบทุกบรรทัด (conf 0.99)
+#   S__17285141.jpg (crop ตรง)    144          5.11x        อ่านครบทุกบรรทัด
 #   กม3976_เชียงราย.png (fallback) 354          2.08x        ยังพลาด (คุณภาพภาพเอง ไม่ใช่ขนาด)
 #   กย3779_กาญจนบุรี.png (fallback) 120          6.13x        ⚠️ พังหมด อ่านได้แต่ขยะ
 #
@@ -389,26 +389,17 @@ def _resize_for_ocr(img):
 def read_plate_paddle(plate_img, return_raw=False):
     """
     อ่านป้ายด้วย PaddleOCR ภาษาไทย แล้วดัดผลให้เข้ารูปแบบป้ายไทย
-    คืน (เลขทะเบียน, จังหวัด, ความมั่นใจ) — หรือเพิ่ม list บรรทัดดิบต่อท้ายเป็น
-    ค่าที่ 4 ถ้า return_raw=True (ไว้ debug ว่า PaddleOCR เห็นข้อความอะไรบ้าง
-    ก่อนดัด เช่น ไม่เจอบรรทัดจังหวัดเลย VS เจอแต่ดัดไม่ตรง)
+    คืน (เลขทะเบียน, ความมั่นใจ) — หรือเพิ่ม list บรรทัดดิบต่อท้ายเป็นค่าที่ 3
+    ถ้า return_raw=True (ไว้ debug ว่า PaddleOCR เห็นข้อความอะไรบ้างก่อนดัด)
 
     โมเดลที่ใช้เป็นโมเดลอ่านข้อความไทยทั่วไป ไม่ได้เทรนเฉพาะป้ายทะเบียน
     ผลดิบจึงมักเพี้ยน ต้องพึ่ง thai_plate.py ช่วยดัด (แก้เลข/เทียบชื่อจังหวัด)
 
-    ⚠️ ข้อจำกัดที่รู้อยู่แล้ว (known limitation) — เลขทะเบียนแม่นยำสูงมาก
-    (วัดได้ 4/4 ถูกต้องทั้งภาพ close-up และภาพ CCTV เต็มเฟรมจริงทั้งกลางวัน/
-    กลางคืน) แต่ "จังหวัด" ยังอ่านไม่นิ่งกับภาพ CCTV จริงที่ป้ายเป็นแค่จุดเล็ก ๆ
-    ในเฟรม (วัดได้แค่ 1/4 ถูกต้อง — ตัวที่ผ่านคือภาพ close-up คุณภาพสูงเท่านั้น)
-    เพราะตัวอักษรจังหวัดเล็กกว่าทะเบียนมาก พอถูก crop+ย่อภาพมาแล้วจิ๋วเกินกว่า
-    ตัวตรวจจับข้อความจะเห็น ลองขยายภาพเองใน _resize_for_ocr() แล้วช่วยได้บ้าง
-    แต่ไม่พอสำหรับภาพคุณภาพต่ำ/บีบอัดหนักจาก CCTV จริง
-
-    ตัดสินใจ (2569-09-15): ไม่ไล่แก้ต่อตอนนี้ เพราะ "จังหวัด" ไม่ถูกใช้ตัดสินใจ
-    เปิด-ปิดไม้กั้นเลย (Form1.cs เทียบแค่ NormPlate(p) กับคอลัมน์ plate_number
-    ในฐานข้อมูล ไม่เอา province มาเทียบด้วย) ใช้แค่โชว์บนหน้าจอ/บันทึก log
-    เท่านั้น ถ้าจะแก้ต่อในอนาคต ทางที่น่าจะช่วยได้จริงคือปรับฮาร์ดแวร์กล้อง
-    (ซูม/ความละเอียดให้ป้ายใหญ่ขึ้นในเฟรม) มากกว่าไล่ปรับพารามิเตอร์ซอฟต์แวร์ต่อ
+    หมายเหตุ: อ่านเฉพาะ "เลขทะเบียน" เท่านั้น ไม่อ่านชื่อจังหวัดแล้ว
+    (ตัดออกเมื่อ 2569-09-15) เพราะตัวอักษรจังหวัดเล็กกว่าเลขทะเบียนมาก
+    วัดจากภาพทดสอบจริงได้ เลขทะเบียนถูก 4/4 แต่จังหวัดถูกแค่ 1/4
+    และจังหวัดไม่เคยถูกใช้ตัดสินเปิด-ปิดไม้กั้นเลย — ที่โชว์บนหน้าจอและ
+    บันทึกประวัติใช้จังหวัดจากฐานข้อมูลที่ลงทะเบียนไว้ ซึ่งถูกต้องเสมอ
     """
     if plate_img is not None and plate_img.size > 0:
         # ขยายก่อนเติมขอบ (ดู _resize_for_ocr) กันบรรทัดจังหวัดตัวเล็กเกินตรวจจับ
@@ -433,7 +424,6 @@ def read_plate_paddle(plate_img, return_raw=False):
 
     parsed = parse_plate_lines(lines)
     plate_text = parsed["plate"]
-    province = parsed["province"]
 
     if SAVE_DEBUG_PLATE:
         print(f"   [paddle] อ่านดิบ: {parsed['raw']}")
@@ -446,8 +436,8 @@ def read_plate_paddle(plate_img, return_raw=False):
         conf = sum(l[1] for l in lines) / len(lines)
 
     if return_raw:
-        return plate_text, province, conf, lines
-    return plate_text, province, conf
+        return plate_text, conf, lines
+    return plate_text, conf
 
 
 @app.route("/detect", methods=["POST"])
@@ -500,50 +490,6 @@ def detect():
         print(f"❌ /detect error: {e}")     # error ยังพิมพ์เสมอ ไม่ควรเงียบหาย
         return jsonify({"status": "error", "message": str(e)})
 
-# ===================== โหวตจังหวัดข้ามเฟรม =====================
-#
-# ปัญหา: บรรทัด "จังหวัด" ตัวเล็กกว่าเลขทะเบียนมาก ภาพ CCTV จริงจึงอ่านได้บ้าง
-# ไม่ได้บ้าง และที่อ่านได้ก็เพี้ยนคนละอย่างในแต่ละเฟรม
-#
-# วิธีแก้: รถหนึ่งคันถูกอ่านหลายครั้งอยู่แล้วก่อนไม้กั้นจะตัดสิน จึงเก็บคำตอบ
-# ของ "เลขทะเบียนเดียวกัน" ไว้ช่วงสั้น ๆ แล้วตอบด้วยจังหวัดที่โหวตมาบ่อยที่สุด
-# คำตอบที่ถูกจะซ้ำ ๆ กัน ส่วนคำตอบที่เพี้ยนมักเพี้ยนไปคนละทางทุกครั้ง เสียงจึงกระจาย
-#
-# ไม่ถ่วงเวลาตัดสินเลย เพราะตอบทันทีทุกครั้งด้วยเสียงข้างมาก ณ ตอนนั้น
-# (ไม่ได้รอให้ครบจำนวนโหวตก่อน)
-PROVINCE_VOTE_TTL = float(os.environ.get("LPR_PROV_VOTE_TTL", "12"))  # เก็บโหวตไว้กี่วินาที
-_province_votes = {}          # {เลขทะเบียน: [(จังหวัด, เวลา), ...]}
-_province_votes_lock = threading.Lock()
-
-
-def vote_province(plate_text, province):
-    """บันทึกโหวตแล้วคืนจังหวัดที่ได้เสียงข้างมากของทะเบียนนี้"""
-    if not plate_text:
-        return province
-    now = time.time()
-    with _province_votes_lock:
-        # ล้างทะเบียนที่เงียบไปนานแล้ว กัน dict โตไม่รู้จบตอนรันยาว ๆ
-        for key in [k for k, v in _province_votes.items()
-                    if not v or now - v[-1][1] > PROVINCE_VOTE_TTL]:
-            del _province_votes[key]
-
-        votes = [v for v in _province_votes.get(plate_text, [])
-                 if now - v[1] <= PROVINCE_VOTE_TTL]
-        if province:
-            votes.append((province, now))
-        _province_votes[plate_text] = votes[-20:]
-
-        names = [v[0] for v in votes]
-        if not names:
-            return ""
-        # เสียงเท่ากัน → เอาอันที่อ่านได้ล่าสุด (ใกล้เคียงสภาพปัจจุบันที่สุด)
-        winner = max(set(names), key=lambda x: (names.count(x), len(names) - 1 - names[::-1].index(x)))
-        if winner != province and province:
-            print(f"   🗳️ จังหวัด: เฟรมนี้อ่านได้ '{province}' "
-                  f"แต่เสียงข้างมากของ {plate_text} คือ '{winner}' ({names.count(winner)}/{len(names)})")
-        return winner
-
-
 @app.route("/predict", methods=["POST"])
 def predict():
     if "image" not in request.files:
@@ -594,7 +540,7 @@ def predict():
             cv2.imwrite("debug_plate.jpg", plate)
 
         # ขอ raw lines มาด้วยตั้งแต่รอบแรก จะได้ไม่ต้องเรียก OCR ซ้ำตอนอ่านไม่ออก
-        plate_text, province, confidence, raw_lines = read_plate_paddle(plate, return_raw=True)
+        plate_text, confidence, raw_lines = read_plate_paddle(plate, return_raw=True)
 
         # กันกรณี YOLO ตัดกรอบพลาด (พบว่าเกิดได้เมื่อป้ายกินพื้นที่เกือบเต็มเฟรม —
         # โมเดลไม่ค่อยเจอภาพแบบนี้ตอนเทรน จึงหากรอบผิดจนตัดตัวเลขขาดไปครึ่งป้าย)
@@ -610,19 +556,16 @@ def predict():
         crop_ratio = (x2 - x1) / max(1, (y2 - y1))
         suspicious = crop_ratio < MIN_PLATE_ASPECT or not plate_text or len(plate_text) < 5
         if suspicious:
-            alt_text, alt_province, alt_conf, alt_raw = read_plate_paddle(frame, return_raw=True)
+            alt_text, alt_conf, alt_raw = read_plate_paddle(frame, return_raw=True)
             # เลือกผลที่ "สมบูรณ์กว่า" โดยดูจากความยาว — ถ้ากรอบตัดขาดจริง ผลจาก
             # ภาพเต็มควรยาวกว่า (ไม่ได้ตัด) ถ้าอ่านจากกรอบได้ครบอยู่แล้วก็ไม่เปลี่ยน
             if alt_text and (not plate_text or len(alt_text) > len(plate_text)):
                 print(f"   ⚠️ กรอบต้องสงสัย (ratio={crop_ratio:.2f}, อ่านได้ '{plate_text}')"
                       f" — ใช้ผลจากภาพเต็มแทน: '{alt_text}'")
-                plate_text, province, confidence = alt_text, alt_province, alt_conf
+                plate_text, confidence = alt_text, alt_conf
                 raw_lines = alt_raw
 
-        print(f"🔤 อ่านตัวอักษร: '{plate_text}' | จังหวัด: '{province}' | conf {confidence:.2f}")
-
-        # จังหวัดที่อ่านได้เฟรมเดียวไม่น่าเชื่อถือ ใช้เสียงข้างมากของทะเบียนนี้แทน
-        province = vote_province(plate_text, province)
+        print(f"🔤 อ่านตัวอักษร: '{plate_text}' | conf {confidence:.2f}")
 
         if not plate_text:
             # อ่านไม่ออก — พิมพ์รายละเอียดให้เสมอ (ไม่ซ่อนหลัง debug flag) เพราะนี่คือ
@@ -634,18 +577,13 @@ def predict():
                   f"{min(MAX_UPSCALE, TARGET_OCR_HEIGHT / max(1, ch)) * ch:.0f}px | OCR เห็น: {seen}")
             return jsonify({"status": "error", "message": f"อ่านตัวอักษรบนป้ายไม่ได้ (ป้าย {cw}x{ch}px)"})
 
-        full_text = f"{plate_text} {province}".strip()
-
         elapsed = time.time() - t0
-        print(f"🚗 อ่านได้: {plate_text}  | เต็ม: {full_text}  "
-              f"| conf {confidence:.2f} | ⏱️ {elapsed:.2f}s")
+        print(f"🚗 อ่านได้: {plate_text} | conf {confidence:.2f} | ⏱️ {elapsed:.2f}s")
 
         # คีย์ 'text' คือค่าที่ฝั่ง C# เอาไปใช้ (result.text) — ต้องมีเสมอ
         return jsonify({
             "status": "success",
             "text": plate_text,
-            "full_text": full_text,
-            "province": province,
             "confidence": round(confidence, 4),
             "box": [x1, y1, x2, y2], 
         })
