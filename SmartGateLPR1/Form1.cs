@@ -1406,6 +1406,13 @@ namespace SmartGateLPR1
         }
 
         // ✅ 3. ฟังก์ชันส่งรูปไปให้ Python API (ฉบับแก้ RAM ระเบิด 30GB)
+        // หมายเหตุ: await ทุกจุดในนี้ใส่ .ConfigureAwait(false) เพราะเมธอดนี้ถูกเรียก
+        // รัวมากตอน tracking (สูงสุด ~25 ครั้ง/วินาที/กล้อง) — ถ้าไม่ใส่ Continuation
+        // หลัง await จะถูกดีดกลับไปรันบน UI thread ทุกครั้ง (WinForms SynchronizationContext)
+        // พอมี 2 กล้องพร้อมกันจะยิงรวมกันหลายสิบครั้ง/วินาที ทำให้ UI thread รับงาน
+        // ท่วมจน "ค้าง" ทั้งโปรแกรม (คือปัญหาที่เจอตอนต่อกล้อง 2 ตัว) ส่วนจุดที่ต้อง
+        // แตะ UI จริง ๆ (SetPlateText/SetLprStatus/this.Invoke) ยังมี Invoke/BeginInvoke
+        // กำกับไว้ครบอยู่แล้ว จึงตัดการ capture context ทิ้งได้อย่างปลอดภัย
         private async Task SendToAI(Bitmap bitmap, int camId)
         {
             // ถ้า AI ยังประมวลผลรูปเก่าไม่เสร็จ ให้โยนรูปใหม่ทิ้งทันที! ไม่ต้องรอคิวให้หนัก RAM
@@ -1439,8 +1446,8 @@ namespace SmartGateLPR1
                         content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
 
                         // ยิงไปที่ Python API
-                        var response = await client.PostAsync("http://localhost:5000/predict", content);
-                        var jsonResponse = await response.Content.ReadAsStringAsync();
+                        var response = await client.PostAsync("http://localhost:5000/predict", content).ConfigureAwait(false);
+                        var jsonResponse = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
                         // แกะคำตอบ JSON มาโชว์บนหน้าจอ
                         dynamic result = JsonConvert.DeserializeObject(jsonResponse);
@@ -1556,6 +1563,8 @@ namespace SmartGateLPR1
             }
         }
 
+        // หมายเหตุ ConfigureAwait(false): ดูคำอธิบายเดียวกันที่ SendToAI() ด้านบน
+        // เมธอดนี้ยิ่งเรียกถี่กว่า SendToAI มาก (ทุก trackIntervalMs) จึงสำคัญกว่าด้วยซ้ำ
         private async Task DetectBox(Bitmap bitmap, int camId)
         {
             isDetecting[camId] = true;
@@ -1594,8 +1603,8 @@ namespace SmartGateLPR1
                             content.Add(new StringContent(lastBox.Bottom.ToString()), "by2");
                         }
 
-                        var response = await client.PostAsync("http://localhost:5000/detect", content);
-                        var json = await response.Content.ReadAsStringAsync();
+                        var response = await client.PostAsync("http://localhost:5000/detect", content).ConfigureAwait(false);
+                        var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                         dynamic result = JsonConvert.DeserializeObject(json);
 
                         // ฝั่ง AI กำลังอ่านตัวอักษรอยู่ จึงยังไม่ได้ตรวจกรอบให้เฟรมนี้
