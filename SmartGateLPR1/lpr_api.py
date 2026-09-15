@@ -162,12 +162,39 @@ except Exception:
     pass
 
 # ---------- โหลด PaddleOCR อ่านตัวอักษรภาษาไทย ----------
+# ปิด oneDNN (mkldnn) ตั้งแต่ระดับ environment variable — ต้องตั้ง "ก่อน" import
+# paddleocr/paddlex เพราะ paddlex อ่านค่าธงพวกนี้ตอน import (paddlex/utils/flags.py)
+# ถ้าตั้งทีหลังจะไม่มีผล  ค่า PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT เดิมเป็น True
+# แปลว่า paddlex จะเลือก run_mode="mkldnn" ให้เองแม้เราส่ง enable_mkldnn=False
+# ในบางเส้นทาง (เช่นโมเดลย่อยที่ไม่ได้ผ่าน engine_config ของเรา)
+if os.environ.get("LPR_ENABLE_MKLDNN", "0") != "1":
+    os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
+    os.environ.setdefault("FLAGS_use_mkldnn", "0")
+
 from paddleocr import PaddleOCR
 
 PADDLE_DEVICE = "gpu:0" if USE_GPU else "cpu"
 print(f"⏳ กำลังโหลด PaddleOCR ภาษาไทย ({PADDLE_REC_MODEL})...")
 # ปิดโมดูลที่ไว้จัดการเอกสาร (หมุนหน้า/ดัดกระดาษ) ป้ายทะเบียนไม่ต้องใช้ และทำให้ช้า
-ocr = PaddleOCR(
+
+# engine_config: บังคับค่าที่ส่งต่อไปถึง Paddle Inference โดยตรง
+#   run_mode="paddle"      -> ไม่ใช้ oneDNN (เทียบเท่า config.disable_mkldnn())
+#   enable_new_ir=False    -> ไม่ใช้ executor รุ่นใหม่ (PIR) ซึ่งเป็นตัวที่พังจริง ๆ
+# ที่ต้องทำสองชั้น (ทั้ง enable_mkldnn=False และตรงนี้) เพราะ error ที่เจอโผล่จาก
+# paddle/fluid/framework/new_executor/instruction/onednn/onednn_instruction.cc
+# คือจุดที่ PIR executor แปลง attribute ของ op oneDNN — ปิดอย่างใดอย่างหนึ่งก็พอ
+# ตัดเส้นทางนั้นได้ แต่ปิดทั้งคู่ชัวร์กว่า เพราะ paddlex มีหลายจุดที่ตั้งค่าเอง
+# (ต้องใส่ cpu_threads เองด้วย เพราะพอส่ง engine_config เข้าไป PaddleOCR จะใช้ค่านี้
+#  แทนค่าที่มันสร้างให้เอง — ถ้าไม่ใส่จะหล่นไปใช้ค่าดีฟอลต์ของ Paddle ที่น้อยกว่า)
+_PADDLE_ENGINE_CFG = {
+    "paddle_static": {
+        "run_mode": "paddle",
+        "enable_new_ir": False,
+        "cpu_threads": int(os.environ.get("LPR_CPU_THREADS", "10")),
+    }
+}
+
+_ocr_kwargs = dict(
     text_recognition_model_name=PADDLE_REC_MODEL,
     use_doc_orientation_classify=False,
     use_doc_unwarping=False,
@@ -189,6 +216,20 @@ ocr = PaddleOCR(
     # จนภาพที่เบลออยู่แล้วเละจนอ่านไม่ออกเลย — คุมการขยายภาพ crop เองแทน
     # (ดู _resize_for_ocr ด้านล่าง) แม่นกว่าและเร็วกว่าปล่อยให้ Paddle ทำเอง
 )
+
+if os.environ.get("LPR_ENABLE_MKLDNN", "0") != "1":
+    _ocr_kwargs["engine_config"] = _PADDLE_ENGINE_CFG
+
+try:
+    ocr = PaddleOCR(**_ocr_kwargs)
+except (TypeError, ValueError) as e:
+    # paddleocr รุ่นเก่ายังไม่มีพารามิเตอร์ engine_config — ถอยไปใช้แบบเดิม
+    # (ยังมี enable_mkldnn=False กับ environment variable ด้านบนคุมอยู่)
+    if "engine_config" not in str(e):
+        raise
+    print(f"ℹ️  paddleocr รุ่นนี้ไม่รองรับ engine_config ({e}) — ใช้ค่าเริ่มต้นแทน")
+    _ocr_kwargs.pop("engine_config", None)
+    ocr = PaddleOCR(**_ocr_kwargs)
 
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
 print("🔥 กำลัง warm-up โมเดล...")
