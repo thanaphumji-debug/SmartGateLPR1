@@ -136,6 +136,19 @@ SAVE_DEBUG_PLATE = os.environ.get("LPR_DEBUG_PLATE", "0") == "1"
 # ============================================================
 # โมเดลอ่านข้อความไทยของ PaddleOCR (ดาวน์โหลดเองอัตโนมัติครั้งแรกที่รัน)
 PADDLE_REC_MODEL = os.environ.get("LPR_PADDLE_REC", "th_PP-OCRv5_mobile_rec")
+# โมเดล "ตรวจจับตำแหน่งข้อความ" ของ PaddleOCR
+#
+# ⚠️ ถ้าไม่ระบุ PaddleOCR จะเลือก PP-OCRv5_server_det ให้เอง (เห็นได้ที่
+# paddleocr/_pipelines/ocr.py:391) ซึ่งเป็นรุ่น server ตัวใหญ่ หนักกว่ารุ่น
+# mobile หลายเท่า — เราเผลอปล่อยไว้ที่ค่าเริ่มต้นเพราะไปตั้งแค่โมเดล "อ่าน
+# ตัวอักษร" (rec) เป็น mobile อย่างเดียว
+#
+# งานของเราเป็นภาพป้ายที่ crop มาแล้ว มีข้อความแค่ 1-2 บรรทัดตัวใหญ่ ๆ
+# ไม่ต้องใช้ตัวตรวจจับข้อความระดับเอกสารทั้งหน้า รุ่น mobile เพียงพอมาก
+PADDLE_DET_MODEL = os.environ.get("LPR_PADDLE_DET", "PP-OCRv5_mobile_det")
+# หมุนบรรทัดข้อความที่กลับหัว — เราดัดป้ายให้ตรงเองอยู่แล้วด้วย deskew_plate()
+# จึงปิดได้ ประหยัดการรันโมเดลเพิ่มอีกตัวต่อทุกบรรทัดที่เจอ
+PADDLE_TEXTLINE_ORI = os.environ.get("LPR_TEXTLINE_ORI", "0") == "1"
 
 app = Flask(__name__)
 
@@ -186,9 +199,11 @@ print(f"⏳ กำลังโหลด PaddleOCR ภาษาไทย ({PADDLE
 # ตัดเส้นทางนั้นได้ แต่ปิดทั้งคู่ชัวร์กว่า เพราะ paddlex มีหลายจุดที่ตั้งค่าเอง
 # (ต้องใส่ cpu_threads เองด้วย เพราะพอส่ง engine_config เข้าไป PaddleOCR จะใช้ค่านี้
 #  แทนค่าที่มันสร้างให้เอง — ถ้าไม่ใส่จะหล่นไปใช้ค่าดีฟอลต์ของ Paddle ที่น้อยกว่า)
+ENABLE_MKLDNN = os.environ.get("LPR_ENABLE_MKLDNN", "0") == "1"
+
 _PADDLE_ENGINE_CFG = {
     "paddle_static": {
-        "run_mode": "paddle",
+        "run_mode": "mkldnn" if ENABLE_MKLDNN else "paddle",
         "enable_new_ir": False,
         "cpu_threads": int(os.environ.get("LPR_CPU_THREADS", "10")),
     }
@@ -196,20 +211,23 @@ _PADDLE_ENGINE_CFG = {
 
 _ocr_kwargs = dict(
     text_recognition_model_name=PADDLE_REC_MODEL,
+    text_detection_model_name=PADDLE_DET_MODEL,
     use_doc_orientation_classify=False,
     use_doc_unwarping=False,
-    use_textline_orientation=True,   # ช่วยตอนป้ายเอียงเล็กน้อย
+    use_textline_orientation=PADDLE_TEXTLINE_ORI,
     device=PADDLE_DEVICE,
-    # ปิด mkldnn (oneDNN) — ค่าเริ่มต้นของ PaddleOCR บน CPU เปิดไว้ (enable_mkldnn=True)
-    # แต่ชนกับบั๊กความเข้ากันไม่ได้ของ Paddle PIR (executor รุ่นใหม่) กับ oneDNN
-    # ในบางโมเดล ทำให้พังตอนรันจริงด้วย error:
-    #   (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
-    #   [pir::ArrayAttribute<pir::DoubleAttribute>]
-    #   (at ...onednn_instruction.cc:118)
-    # ปิดไปเลยจะช้าลงเล็กน้อย (mkldnn ช่วยเร่งความเร็วบน CPU) แต่รันได้เสถียรกว่า
-    # ยังปรับเปิดกลับได้ด้วย LPR_ENABLE_MKLDNN=1 ถ้าใช้เวอร์ชัน paddlepaddle
-    # ที่แก้บั๊กนี้แล้วในอนาคต
-    enable_mkldnn=os.environ.get("LPR_ENABLE_MKLDNN", "0") == "1",
+    # mkldnn (oneDNN) — ตัวเร่งความเร็ว Paddle บน CPU ปกติเปิดไว้
+    #
+    # ที่ต้องปิดไปก่อนหน้านี้เพราะมันชนกับ PIR (executor รุ่นใหม่) แล้วพังด้วย
+    #   (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support ...
+    #   (at ...new_executor/instruction/onednn/onednn_instruction.cc:118)
+    # สังเกตว่า error มาจาก "PIR executor" ล้วน ๆ ซึ่งตอนนี้เราปิดไปแล้วด้วย
+    # enable_new_ir=False (ดู _PADDLE_ENGINE_CFG) จึงน่าจะเปิด mkldnn กลับมาได้
+    # โดยไม่พังอีก และได้ความเร็วบน CPU คืนมา
+    #
+    # แต่ยังไม่กล้าเปิดเป็นค่าเริ่มต้น เพราะยังไม่ได้ทดสอบกับเครื่องจริง
+    # ถ้าอยากลอง: ตั้ง LPR_ENABLE_MKLDNN=1 ก่อนรัน ถ้าไม่พังก็เร็วขึ้นฟรี ๆ
+    enable_mkldnn=ENABLE_MKLDNN,
     # ปล่อย text_det_limit_* ไว้ที่ค่าเริ่มต้น (limit_type="max", 960px) —
     # ลองสลับเป็น "min" มาก่อนแล้วแต่ขยายภาพใหญ่ (เช่นภาพเต็มเฟรมตอน fallback)
     # แบบไม่จำกัดจนช้าลง 5 เท่า และขยายภาพ crop เล็ก ๆ 6 เท่าแบบไม่ควบคุม
@@ -217,8 +235,9 @@ _ocr_kwargs = dict(
     # (ดู _resize_for_ocr ด้านล่าง) แม่นกว่าและเร็วกว่าปล่อยให้ Paddle ทำเอง
 )
 
-if os.environ.get("LPR_ENABLE_MKLDNN", "0") != "1":
-    _ocr_kwargs["engine_config"] = _PADDLE_ENGINE_CFG
+# engine_config ใส่เสมอ — ตัวที่กันบั๊กคือ enable_new_ir=False ไม่ใช่การปิด mkldnn
+# (run_mode จะถูกตั้งตาม ENABLE_MKLDNN ด้านบนแล้ว)
+_ocr_kwargs["engine_config"] = _PADDLE_ENGINE_CFG
 
 try:
     ocr = PaddleOCR(**_ocr_kwargs)
@@ -531,8 +550,11 @@ def predict():
         # เร็วขึ้น 14 เท่าโดยความมั่นใจแทบไม่ต่าง (ป้ายกินพื้นที่ในภาพที่ป้อนเข้า
         # โมเดลมากกว่าเดิมมาก จึงไม่ต้องพึ่งความละเอียดสูงหรือ TTA)
         # ถ้าค้นใน ROI ไม่เจอ (รถขยับเร็วจนหลุดกรอบเดิม) ค่อยถอยไปค้นทั้งเฟรม
+        t_decode = time.time() - t0
+        t_yolo0 = time.time()
         hint = _read_box_hint(request.form)
         box = detect_in_roi(frame, hint) if hint else None
+        used_roi = box is not None
 
         if box is None:
             with model_lock:
@@ -547,6 +569,7 @@ def predict():
             box = list(map(int, boxes.xyxy[best_i].tolist()))
 
         x1, y1, x2, y2 = box
+        t_yolo = time.time() - t_yolo0
 
         # ขยายกรอบเล็กน้อย กันตัวอักษรริมป้ายโดนตัด
         h, w = frame.shape[:2]
@@ -565,7 +588,10 @@ def predict():
             cv2.imwrite("debug_plate.jpg", plate)
 
         # ขอ raw lines มาด้วยตั้งแต่รอบแรก จะได้ไม่ต้องเรียก OCR ซ้ำตอนอ่านไม่ออก
+        t_ocr0 = time.time()
         plate_text, confidence, raw_lines = read_plate_paddle(plate, return_raw=True)
+        t_ocr = time.time() - t_ocr0
+        t_ocr_extra = 0.0
 
         # กันกรณี YOLO ตัดกรอบพลาด (พบว่าเกิดได้เมื่อป้ายกินพื้นที่เกือบเต็มเฟรม —
         # โมเดลไม่ค่อยเจอภาพแบบนี้ตอนเทรน จึงหากรอบผิดจนตัดตัวเลขขาดไปครึ่งป้าย)
@@ -581,7 +607,9 @@ def predict():
         crop_ratio = (x2 - x1) / max(1, (y2 - y1))
         suspicious = crop_ratio < MIN_PLATE_ASPECT or not plate_text or len(plate_text) < 5
         if suspicious:
+            t_extra0 = time.time()
             alt_text, alt_conf, alt_raw = read_plate_paddle(frame, return_raw=True)
+            t_ocr_extra = time.time() - t_extra0
             # เลือกผลที่ "สมบูรณ์กว่า" โดยดูจากความยาว — ถ้ากรอบตัดขาดจริง ผลจาก
             # ภาพเต็มควรยาวกว่า (ไม่ได้ตัด) ถ้าอ่านจากกรอบได้ครบอยู่แล้วก็ไม่เปลี่ยน
             if alt_text and (not plate_text or len(alt_text) > len(plate_text)):
@@ -602,8 +630,13 @@ def predict():
                   f"{min(MAX_UPSCALE, TARGET_OCR_HEIGHT / max(1, ch)) * ch:.0f}px | OCR เห็น: {seen}")
             return jsonify({"status": "error", "message": f"อ่านตัวอักษรบนป้ายไม่ได้ (ป้าย {cw}x{ch}px)"})
 
+        # แยกเวลาแต่ละขั้นให้เห็นชัดว่าช้าตรงไหน (ไม่งั้นเดาไม่ถูกว่าจะไปแก้จุดไหน)
         elapsed = time.time() - t0
-        print(f"🚗 อ่านได้: {plate_text} | conf {confidence:.2f} | ⏱️ {elapsed:.2f}s")
+        extra = f" + OCR ซ้ำภาพเต็ม {t_ocr_extra:.2f}s" if t_ocr_extra else ""
+        print(f"🚗 อ่านได้: {plate_text} | conf {confidence:.2f} | ⏱️ รวม {elapsed:.2f}s "
+              f"= ถอดภาพ {t_decode:.2f}s + หากรอบ {t_yolo:.2f}s"
+              f"{' (ใช้กรอบจาก /detect)' if used_roi else ' (ค้นทั้งเฟรม)'}"
+              f" + อ่านตัวอักษร {t_ocr:.2f}s{extra}")
 
         # คีย์ 'text' คือค่าที่ฝั่ง C# เอาไปใช้ (result.text) — ต้องมีเสมอ
         return jsonify({
