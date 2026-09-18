@@ -90,9 +90,9 @@ namespace SmartGateLPR1
         // ความมั่นใจสูงสุดของเลขที่กล้องนั้นยืนยัน (ใช้เลือกฝั่งที่น่าเชื่อกว่าตอนหน้า-หลังไม่ตรงกัน)
         private double[] bestConf = new double[3];
         // กันค้าง: ส่งไปแล้วแต่ผลตัดสินไม่ออกสักทีภายในกี่วินาที ให้กลับไปอ่านใหม่
-        // ต้องมากกว่า otherCamMaxWaitSec เสมอ ไม่งั้นกล้องที่ส่งไปแล้วจะปลดล็อก
+        // ต้องมากกว่า otherCamHardCapSec เสมอ ไม่งั้นกล้องที่ส่งไปแล้วจะปลดล็อก
         // กลับไปอ่านใหม่ทั้งที่ศูนย์ตัดสินใจยังรออีกกล้องอยู่
-        private double submitHoldMaxSec = 12.0;
+        private double submitHoldMaxSec = 15.0;
         // เพดานการรออีกกล้อง (วินาที)
         //
         // ไม่ได้รอตายตัวตามเวลา แต่รอตาม "อีกกล้องกำลังทำอะไรอยู่":
@@ -100,6 +100,8 @@ namespace SmartGateLPR1
         //   ตรวจไม่เจอป้ายเลย                → ตัดสินทันที ไม่ต้องรอ
         // เพดานนี้เป็นแค่ตัวกันค้าง เผื่อกล้องเห็นป้ายแต่อ่านไม่ออกสักที
         private double otherCamMaxWaitSec = 10.0;
+        // เพดานแข็ง: ต่อให้อีกกล้องยังยิงอ่านค้างอยู่ ก็ไม่รอเกินค่านี้
+        private double otherCamHardCapSec = 13.0;
         // อีกกล้อง "ตรวจไม่เจอป้ายเลย" ให้รอกี่วินาทีก่อนตัดสินด้วยผลกล้องเดียว
         //
         // เดิมตัดสินทันที ซึ่งเร็วเกินไป — จังหวะที่กล้องแรกส่งผล อีกกล้องอาจกำลัง
@@ -1285,7 +1287,13 @@ namespace SmartGateLPR1
                 if (plateSubmittedAt[mine] == DateTime.MinValue) return false;
 
                 double waited = (DateTime.Now - plateSubmittedAt[mine]).TotalSeconds;
-                if (waited >= otherCamMaxWaitSec) return false;   // เพดานกันค้าง
+
+                // เพดานกันค้าง — แต่ห้ามตัดบทตอนอีกกล้อง "กำลังยิงอ่านอยู่จริง ๆ"
+                // ถ้าครบ 10 วิพอดีตอนที่มันยิง /predict ค้างอยู่ การตัดสินทิ้งตรงนั้น
+                // แปลว่าทิ้งคำตอบที่เหลืออีกไม่กี่ร้อยมิลลิวินาทีก็จะได้แล้ว
+                // จึงยืดให้อีกหน่อยถึง otherCamHardCapSec เฉพาะกรณีที่กำลังอ่านค้าง
+                if (waited >= otherCamHardCapSec) return false;
+                if (waited >= otherCamMaxWaitSec && !isReading[other]) return false;
 
                 // อีกกล้องกำลังทำงานอยู่จริงไหม
                 bool busy = isReading[other] || confirmCount[other] > 0 || otherSeeing;
@@ -2032,6 +2040,44 @@ namespace SmartGateLPR1
                             }
                             int seenTimes, needReads;
                             double sendConf;
+
+                            // ⚠️ ลำดับตรงนี้สำคัญมาก — เคยเป็นบั๊ก "อ่านได้จากกล้องเดียว"
+                            //
+                            // อาการ: รอกล้องอีกตัวอยู่ พอกล้องนั้นอ่านได้ปุ๊บ ผลกลับขึ้นว่า
+                            // อ่านได้จากกล้องเดียว ทั้งที่อ่านได้ทั้งคู่ (เกิดได้ทั้งหน้าและหลัง)
+                            //
+                            // สาเหตุ: เดิมตั้งธง plateSubmitted บนเธรดกล้อง แต่เลขทะเบียน
+                            // ถูกส่งเข้าศูนย์ตัดสินใจ (OnPlateRead) ข้างใน BeginInvoke คือ
+                            // ไปรอคิวของ UI thread ซึ่งตอนกล้องสองตัวทำงานพร้อมกันอาจหน่วง
+                            // ได้เป็นร้อยมิลลิวินาที ระหว่างนั้นสถานะจะขัดกันเอง:
+                            //     plateSubmitted[นี่] = true   ← ตั้งแล้ว
+                            //     pendingPlateCam[นี่] = ""     ← ยังไม่ได้ตั้ง
+                            // แล้ว ShouldWaitForOtherCam มีบรรทัด "ถ้าอีกกล้องส่งมาแล้ว
+                            // ไม่ต้องรอ" มันจึงเลิกรอทันที ส่วน TryDecide อ่าน
+                            // pendingPlateCam ได้ค่าว่าง → ตัดสินด้วยกล้องเดียว
+                            // ตัวจับเวลาไฮบริดเต้นทุก 1 วินาที จึงมีโอกาสตกร่องนี้ได้เรื่อย ๆ
+                            //
+                            // แก้โดยบันทึกเลขเข้าศูนย์ตัดสินใจ "ก่อน" ตั้งธง plateSubmitted
+                            // และทำบนเธรดนี้เลย ไม่ผ่าน BeginInvoke — ความจริงสองอย่างนี้
+                            // จะได้ปรากฏพร้อมกันเสมอ ไม่มีช่วงที่ขัดกัน
+                            // (OnPlateRead ที่เรียกทีหลังใน BeginInvoke เขียนค่าเดิมซ้ำ
+                            //  ไม่มีผลข้างเคียง มีไว้ให้ส่วน UI กับ TryDecide ทำงานต่อ)
+                            bool willSubmit;
+                            lock (turnLock)
+                            {
+                                willSubmit = confirmed && !plateSubmitted[camId];
+                                sendConf = bestConf[camId];
+                            }
+                            if (willSubmit && !string.IsNullOrWhiteSpace(plateText))
+                            {
+                                lock (hybridLock)
+                                {
+                                    pendingPlateCam[camId] = plateText.Trim();
+                                    pendingPlateConf[camId] = sendConf;
+                                    pendingPlateCamTime[camId] = DateTime.Now;
+                                }
+                            }
+
                             // ยืนยันแล้วให้ "ส่งครั้งเดียว" — ตั้งธงตรงนี้ใต้ล็อกเดียวกับที่อ่านค่า
                             // กันกรณีสองรอบอ่านจบพร้อมกันแล้วส่งซ้ำ
                             bool submitNow = false;
