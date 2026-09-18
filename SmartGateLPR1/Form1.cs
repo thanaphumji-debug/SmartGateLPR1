@@ -100,6 +100,13 @@ namespace SmartGateLPR1
         //   ตรวจไม่เจอป้ายเลย                → ตัดสินทันที ไม่ต้องรอ
         // เพดานนี้เป็นแค่ตัวกันค้าง เผื่อกล้องเห็นป้ายแต่อ่านไม่ออกสักที
         private double otherCamMaxWaitSec = 10.0;
+        // อีกกล้อง "ตรวจไม่เจอป้ายเลย" ให้รอกี่วินาทีก่อนตัดสินด้วยผลกล้องเดียว
+        //
+        // เดิมตัดสินทันที ซึ่งเร็วเกินไป — จังหวะที่กล้องแรกส่งผล อีกกล้องอาจกำลัง
+        // อยู่ระหว่างเฟรมที่ยังจับกรอบไม่ติด (รถเพิ่งเข้าเฟรม/ป้ายเอียง) พอรอสัก
+        // ครู่มันก็เจอ แต่ผลตัดสินออกไปก่อนแล้ว กลายเป็น "อ่านได้จากกล้องเดียว"
+        // ทั้งที่จริง ๆ อ่านได้ทั้งคู่
+        private double noPlateWaitSec = 3.0;
         // ล็อกแล้วอ่านซ้ำเพื่อ "ตรวจทาน" ทุกกี่วินาที
         //
         // เดิมล็อกแล้วคือหยุดอ่านถาวร จนกว่าจะครบรอบเปิด-ปิดไม้กั้น (ResetLprTurn)
@@ -782,12 +789,27 @@ namespace SmartGateLPR1
                             // อีกกล้องกำลังอ่านเลขอยู่ → กล้องนี้ลดความถี่ลง คืนเครื่องให้ตัวที่กำลังทำงาน
                             if (lprOwner != 0 && lprOwner != camId) myInterval *= 3;
                         }
-                        bool needDetect = !isDetecting[camId] &&
+                        // ส่งผลเข้าระบบตัดสินไปแล้ว = งานของกล้องตัวนี้จบรอบแล้ว
+                        // ต้อง "หยุดจริง ๆ" ทั้งตรวจจับตำแหน่งและอ่านตัวอักษร จนกว่า
+                        // ผลตัดสินจะออก (ResetLprTurn จะล้างธงนี้ให้) ไม่งั้นกรอบแดง
+                        // กับเลขบนจอจะยังขยับ ทั้งที่ค่าที่ส่งไปแล้วถูกล็อกไว้แล้ว
+                        // — ผู้ใช้เห็นแล้วสับสนว่าตกลงมันจบรอบหรือยัง
+                        //
+                        // ยังคงเพดาน submitHoldMaxSec ไว้กันค้าง เผื่อผลตัดสินไม่ออก
+                        // สักที (เช่น อีกกล้องหลุดไป) จะได้กลับมาทำงานเองได้
+                        bool holdAfterSubmit;
+                        lock (turnLock)
+                        {
+                            holdAfterSubmit = plateSubmitted[camId] &&
+                                (DateTime.Now - plateSubmittedAt[camId]).TotalSeconds < submitHoldMaxSec;
+                        }
+
+                        bool needDetect = !holdAfterSubmit && !isDetecting[camId] &&
                             (DateTime.Now - lastDetectTimes[camId]).TotalMilliseconds >= myInterval;
 
                         // ยิงอ่านตราบใดที่ "เห็นกรอบป้ายอยู่" ไม่ใช่แค่ตอนมีความเคลื่อนไหว
                         // (แก้ปัญหา: รถหยุดนิ่งสนิทแล้วภาพไม่เปลี่ยน ระบบเดิมจะไม่ยิงอ่านซ้ำอีกเลย)
-                        bool needRead = nowTracking &&
+                        bool needRead = !holdAfterSubmit && nowTracking &&
                             (DateTime.Now - lastCaptureTimes[camId]).TotalSeconds >= cooldownSeconds;
 
                         bool needSnapshot =
@@ -1267,7 +1289,14 @@ namespace SmartGateLPR1
 
                 // อีกกล้องกำลังทำงานอยู่จริงไหม
                 bool busy = isReading[other] || confirmCount[other] > 0 || otherSeeing;
-                if (!busy) return false;                     // ไม่เจอป้าย ไม่ได้อ่านอะไรอยู่ → ตัดสินเลย
+                if (!busy)
+                {
+                    // ไม่เจอป้าย ไม่ได้อ่านอะไรอยู่ → ให้โอกาสอีก noPlateWaitSec วินาที
+                    // เผื่อมันกำลังจะจับกรอบติด พ้นเวลานี้แล้วค่อยตัดสินด้วยกล้องเดียว
+                    if (waited >= noPlateWaitSec) return false;
+                    waitReason = $"กล้อง{otherName}ยังตรวจไม่เจอป้าย — รออีกหน่อย ({waited:F0}/{noPlateWaitSec:F0} วิ)";
+                    return true;
+                }
 
                 waitReason = isReading[other] || confirmCount[other] > 0
                     ? $"กล้อง{otherName}กำลังอ่านเลขอยู่ ({confirmCount[other]}/{neededReads[other]}) — รอให้เสร็จก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)"
