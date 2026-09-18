@@ -9,7 +9,11 @@
    ใส่ชื่อจังหวัดต่อท้ายหลังขีดล่างได้ (เช่น กย3779_กาญจนบุรี.jpg) แต่จะถูก
    มองข้าม เพราะระบบเลิกอ่านชื่อจังหวัดแล้ว วัดเฉพาะเลขทะเบียนอย่างเดียว
    (ไฟล์ที่ชื่อไม่ใช่ภาษาไทย จะรายงานผลที่อ่านได้เฉย ๆ ไม่คิดเปอร์เซ็นต์)
-3. รัน:  python test_ocr_accuracy.py
+3. เปิดบริการอ่านตัวอักษรไว้ก่อน (คนละหน้าต่าง):  python ocr_api.py
+4. รัน:  python test_ocr_accuracy.py
+
+   หมายเหตุ: ต้องเปิด ocr_api.py แยกไว้ เพราะ PaddleOCR ถูกย้ายไปรันคนละ
+   โปรเซสกับ YOLO แล้ว (torch กับ paddle รุ่น GPU อยู่โปรเซสเดียวกันไม่ได้)
 
 ผลสรุปพิมพ์บนจอ และเขียนรายละเอียดลง test_ocr_accuracy.csv
 """
@@ -31,7 +35,8 @@ TEST_DIR = os.path.join(BASE_DIR, "test_images")
 CSV_PATH = os.path.join(BASE_DIR, "test_ocr_accuracy.csv")
 
 # อ่านโค้ดหลักมาใช้ซ้ำ จะได้วัดของจริงที่ระบบใช้ ไม่ใช่โค้ดคนละชุด
-import lpr_api    # noqa: E402  โหลดโมเดลทั้งหมดตอน import
+# (lpr_api จะเปิด ocr_api.py ให้เองถ้ายังไม่มีใครเปิดไว้)
+import lpr_api    # noqa: E402  โหลดโมเดลตอน import
 
 
 def norm(s):
@@ -106,7 +111,7 @@ def main():
         t0 = time.time()
         raw_lines = []
         try:
-            text, conf, raw_lines = lpr_api.read_plate_paddle(plate_img, return_raw=True)
+            text, conf, raw_lines = lpr_api.read_plate_remote(plate_img)
 
             # กัน YOLO ตัดกรอบพลาด — เหมือนที่ /predict ใน lpr_api.py ทำ
             # (ห้ามเช็คแค่ "text ว่างไหม" เพราะกรอบที่ตัดขาดยังอ่านออกมาเป็น
@@ -115,8 +120,7 @@ def main():
             crop_ratio = pw / max(1, ph)
             suspicious = crop_ratio < lpr_api.MIN_PLATE_ASPECT or not text or len(text) < 5
             if suspicious:
-                alt_text, alt_conf, alt_raw = lpr_api.read_plate_paddle(
-                    frame, return_raw=True)
+                alt_text, alt_conf, alt_raw = lpr_api.read_plate_remote(frame)
                 if alt_text and (not text or len(alt_text) > len(text)):
                     text, conf = alt_text, alt_conf
                     raw_lines = alt_raw
@@ -136,7 +140,7 @@ def main():
         # ข้อความดิบทุกบรรทัดที่ PaddleOCR เห็น (ก่อนดัดด้วย thai_plate.py) —
         # ไว้วินิจฉัยตอนจังหวัด/ทะเบียนผิดว่า OCR ไม่เจอบรรทัดนั้นเลย
         # หรือเจอแต่ดัดไม่ตรง (สองสาเหตุนี้แก้คนละจุดกัน)
-        raw_str = " | ".join(f"{t!r}({sc:.2f})" for t, sc, _ in raw_lines)
+        raw_str = " | ".join(repr(t) for t in raw_lines)
 
         row.update({"ทะเบียนที่อ่านได้": text,
                     "conf": round(conf, 4),

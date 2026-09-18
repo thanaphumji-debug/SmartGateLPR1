@@ -2,16 +2,17 @@
 import os
 import threading
 import io
+import subprocess
 import time
 import sys
+import atexit
 
 import cv2
 import numpy as np
+import requests
 import torch
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
-
-from thai_plate import parse_plate_lines
 
 model_lock = threading.RLock()
 
@@ -105,50 +106,27 @@ CROP_PADDING = 12                             # ขยายกรอบ crop �
 # ป้ายไทยจริงกว้างกว่าสูงชัดเจน วัดจากภาพทดสอบได้ ~1.6 เท่าขึ้นไป
 # ถ้าต่ำกว่านี้ = สงสัยว่า YOLO ตัดกรอบพลาด (ดู "กันกรอบพลาด" ใน /predict)
 MIN_PLATE_ASPECT = 1.3
-# ขยายภาพ crop ที่เตี้ยกว่านี้ให้สูงขึ้นก่อนส่งเข้า PaddleOCR (ดู _resize_for_ocr)
-#
-# ค่าสองตัวนี้ปรับจากผลทดสอบจริง 4 ภาพตอนลอง text_det_limit_type="min"
-# (ให้ PaddleOCR ขยายเองแบบไม่จำกัด, เทียบกับ limit_side_len=736):
-#
-#   ไฟล์                      สูงก่อนขยาย  อัตราขยายตอนนั้น  ผล
-#   578A495.jpg (fallback)        289          2.55x        อ่านครบทุกบรรทัด (conf 0.99)
-#   S__17285141.jpg (crop ตรง)    144          5.11x        อ่านครบทุกบรรทัด
-#   กม3976_เชียงราย.png (fallback) 354          2.08x        ยังพลาด (คุณภาพภาพเอง ไม่ใช่ขนาด)
-#   กย3779_กาญจนบุรี.png (fallback) 120          6.13x        ⚠️ พังหมด อ่านได้แต่ขยะ
-#
-# สรุปได้ว่าขยาย ~2-5 เท่าช่วยได้ แต่ยิ่งภาพต้นทางเล็ก/คุณภาพต่ำ ยิ่งทนอัตรา
-# ขยายสูงไม่ได้ (120px โดน 6 เท่าแล้วพัง) จึงตั้งเป้าให้สูงพอจะช่วยภาพขนาด
-# กลาง ๆ (289px) ได้แบบไม่ต้องขยายแรง และจำกัดเพดานไว้กันภาพเล็กสุดพังซ้ำ
-TARGET_OCR_HEIGHT = 350
-# เพดานการขยาย — เดิม 3.0 ซึ่งพอสำหรับภาพทดสอบ แต่ไม่พอกับกล้องจริงหน้าไม้กั้น
-# ที่ป้ายกินพื้นที่แค่ ~2% ของเฟรม: วัดจากภาพ CCTV จริงได้ crop สูงแค่ ~74px
-# ที่ 3.0 เท่าจะได้แค่ 222px (ยังต่ำกว่าเป้า 350px) และถ้ารถอยู่ไกลกว่านั้นอีก
-# เช่น crop สูง 45px จะได้แค่ 135px ซึ่งเล็กเกินกว่า PaddleOCR จะอ่านออก
-#
-# 5.0 ทำให้ crop 74px แตะเป้า 350px พอดี และ crop 45px ได้ 225px (ใกล้เคียง
-# 222px ที่พิสูจน์แล้วว่าอ่านออกจริงจากภาพ CCTV กลางวัน) ยังต่ำกว่า 6.13x
-# ที่เคยทำให้ภาพคุณภาพต่ำเละจนอ่านไม่ได้เลย
-MAX_UPSCALE = 5.0
-MIN_LINE_SCORE = 0.15                        # ทิ้งบรรทัดที่ OCR มั่นใจต่ำกว่านี้
 # บันทึกภาพป้ายที่ crop ได้ลง debug_plate.jpg ทุกครั้งที่อ่าน (ใช้ตอน debug เท่านั้น)
 # เปิดได้โดยตั้ง environment variable: LPR_DEBUG_PLATE=1
 SAVE_DEBUG_PLATE = os.environ.get("LPR_DEBUG_PLATE", "0") == "1"
 # ============================================================
-# โมเดลอ่านข้อความไทยของ PaddleOCR (ดาวน์โหลดเองอัตโนมัติครั้งแรกที่รัน)
-PADDLE_REC_MODEL = os.environ.get("LPR_PADDLE_REC", "th_PP-OCRv5_mobile_rec")
-# โมเดล "ตรวจจับตำแหน่งข้อความ" ของ PaddleOCR
+# ---------- บริการอ่านตัวอักษร (ocr_api.py) ----------
 #
-# ⚠️ ถ้าไม่ระบุ PaddleOCR จะเลือก PP-OCRv5_server_det ให้เอง (เห็นได้ที่
-# paddleocr/_pipelines/ocr.py:391) ซึ่งเป็นรุ่น server ตัวใหญ่ หนักกว่ารุ่น
-# mobile หลายเท่า — เราเผลอปล่อยไว้ที่ค่าเริ่มต้นเพราะไปตั้งแค่โมเดล "อ่าน
-# ตัวอักษร" (rec) เป็น mobile อย่างเดียว
+# PaddleOCR ถูกแยกไปรันอีกโปรเซสหนึ่ง เพราะ torch (ที่ YOLO ใช้) กับ paddle
+# อยู่โปรเซสเดียวกันไม่ได้เมื่อทั้งคู่เป็นรุ่น GPU — จะพังตอน import ด้วย
+#     ImportError: generic_type: type "_gpuDeviceProperties" is already registered!
+# (ทั้งสองไลบรารีผูก struct ของ CUDA เข้ากับ Python ผ่าน pybind11 โดยใช้ชื่อ
+#  ชนิดข้อมูลเดียวกัน และ pybind11 มีทะเบียนชนิดข้อมูลชุดเดียวต่อหนึ่งโปรเซส)
 #
-# งานของเราเป็นภาพป้ายที่ crop มาแล้ว มีข้อความแค่ 1-2 บรรทัดตัวใหญ่ ๆ
-# ไม่ต้องใช้ตัวตรวจจับข้อความระดับเอกสารทั้งหน้า รุ่น mobile เพียงพอมาก
-PADDLE_DET_MODEL = os.environ.get("LPR_PADDLE_DET", "PP-OCRv5_mobile_det")
-# หมุนบรรทัดข้อความที่กลับหัว — เราดัดป้ายให้ตรงเองอยู่แล้วด้วย deskew_plate()
-# จึงปิดได้ ประหยัดการรันโมเดลเพิ่มอีกตัวต่อทุกบรรทัดที่เจอ
-PADDLE_TEXTLINE_ORI = os.environ.get("LPR_TEXTLINE_ORI", "0") == "1"
+# แยกโปรเซสแล้วต่างคนต่างมีทะเบียนของตัวเอง จึงใช้การ์ดจอได้ทั้งคู่
+OCR_PORT = int(os.environ.get("LPR_OCR_PORT", "5001"))
+OCR_URL = f"http://127.0.0.1:{OCR_PORT}"
+# เปิด ocr_api.py ให้เองอัตโนมัติไหม (ตั้ง 0 ถ้าอยากเปิดเองแยกหน้าต่าง)
+OCR_AUTOSTART = os.environ.get("LPR_OCR_AUTOSTART", "1") == "1"
+# รอบริการ OCR พร้อมนานสุดกี่วินาทีตอนเริ่มโปรแกรม (โหลดโมเดลครั้งแรกใช้เวลา)
+OCR_STARTUP_TIMEOUT = float(os.environ.get("LPR_OCR_STARTUP_TIMEOUT", "180"))
+# รอผลอ่านตัวอักษรนานสุดกี่วินาทีต่อหนึ่งภาพ (ฝั่ง C# ตั้ง timeout ไว้ 15 วิ)
+OCR_TIMEOUT = float(os.environ.get("LPR_OCR_TIMEOUT", "12"))
 
 app = Flask(__name__)
 
@@ -174,164 +152,110 @@ try:
 except Exception:
     pass
 
-# ---------- โหลด PaddleOCR อ่านตัวอักษรภาษาไทย ----------
-# ปิด oneDNN (mkldnn) ตั้งแต่ระดับ environment variable — ต้องตั้ง "ก่อน" import
-# paddleocr/paddlex เพราะ paddlex อ่านค่าธงพวกนี้ตอน import (paddlex/utils/flags.py)
-# ถ้าตั้งทีหลังจะไม่มีผล  ค่า PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT เดิมเป็น True
-# แปลว่า paddlex จะเลือก run_mode="mkldnn" ให้เองแม้เราส่ง enable_mkldnn=False
-# ในบางเส้นทาง (เช่นโมเดลย่อยที่ไม่ได้ผ่าน engine_config ของเรา)
-if os.environ.get("LPR_ENABLE_MKLDNN", "0") != "1":
-    os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
-    os.environ.setdefault("FLAGS_use_mkldnn", "0")
-
-from paddleocr import PaddleOCR
-import paddle as _paddle
-
-# ---------- PaddleOCR จะรันบน GPU หรือ CPU ----------
-#
-# ⚠️ ห้ามใช้ torch.cuda.is_available() ตัดสินแทน (โค้ดเดิมทำแบบนั้น) เพราะ
-# torch กับ paddle เป็นคนละไลบรารี ติดตั้งแยกกัน มี/ไม่มี CUDA ไม่จำเป็นต้องตรงกัน
-# เครื่องที่ลง torch แบบมี CUDA แต่ลง paddlepaddle รุ่น CPU จะโดนสั่งให้ PaddleOCR
-# ไปใช้ "gpu:0" ทั้งที่มันรันไม่ได้  ต้องถาม paddle เองเท่านั้น
-PADDLE_HAS_GPU = False
-try:
-    PADDLE_HAS_GPU = (_paddle.device.is_compiled_with_cuda() and
-                      _paddle.device.cuda.device_count() > 0)
-except Exception:
-    PADDLE_HAS_GPU = False
-
-PADDLE_DEVICE = "gpu:0" if PADDLE_HAS_GPU else "cpu"
-if PADDLE_HAS_GPU:
-    print("🎯 PaddleOCR: รันบน GPU")
-else:
-    print("⚠️  PaddleOCR: รันบน CPU (ช้ากว่า GPU มาก)")
-    if USE_GPU:
-        # มีการ์ดจอให้ใช้อยู่แล้ว แต่ paddle ที่ลงไว้เป็นรุ่น CPU — บอกวิธีแก้ให้ชัด
-        print("   💡 เครื่องนี้มีการ์ดจอที่ใช้ได้ แต่ paddlepaddle ที่ติดตั้งเป็นรุ่น CPU")
-        print("      ลงรุ่น GPU แทนจะเร็วขึ้นมาก:  pip uninstall paddlepaddle")
-        print("      แล้วลง paddlepaddle-gpu ตามรุ่น CUDA ของเครื่อง")
-        print("      (บน GPU จะไม่เจอบั๊ก oneDNN ด้วย เพราะ oneDNN เป็นไลบรารีของ CPU)")
-print(f"⏳ กำลังโหลด PaddleOCR ภาษาไทย ({PADDLE_REC_MODEL})...")
-# ปิดโมดูลที่ไว้จัดการเอกสาร (หมุนหน้า/ดัดกระดาษ) ป้ายทะเบียนไม่ต้องใช้ และทำให้ช้า
-
-# engine_config: บังคับค่าที่ส่งต่อไปถึง Paddle Inference โดยตรง
-#
-# ⛔ บน CPU ห้ามเปิด oneDNN (mkldnn) กับ paddlepaddle รุ่นนี้เด็ดขาด — จะพังด้วย
-#      (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
-#      [pir::ArrayAttribute<pir::DoubleAttribute>]
-#      (at ...new_executor/instruction/onednn/onednn_instruction.cc:118)
-#
-# เคยพยายามแก้ด้วย enable_new_ir=False แล้วไม่ได้ผล เหตุผลอยู่ที่
-# paddlex/inference/models/runners/paddle_static/runner.py:493-494 :
-#
-#     if hasattr(config, "enable_new_ir"):
-#         config.enable_new_ir(self._config.get("enable_new_ir", True))
-#     if hasattr(config, "enable_new_executor"):
-#         config.enable_new_executor()          # <-- เรียกตายตัว ปิดไม่ได้เลย
-#
-# คือ "new IR" กับ "new executor" เป็นคนละสวิตช์ เราปิดได้แต่ตัวแรก ส่วน
-# executor รุ่นใหม่ถูกเปิดตายตัวโดยไม่มีพารามิเตอร์ให้ปิด และไฟล์ที่พัง
-# (onednn_instruction.cc) อยู่ใน new_executor พอดี → ตราบใดที่ยังรันบน CPU
-# และเปิด oneDNN ก็จะเจอบั๊กนี้เสมอ ไม่ว่าจะตั้ง enable_new_ir ยังไง
-#
-# ทางออกจริงคือย้ายไปรันบน GPU (oneDNN เป็นไลบรารีของ CPU ไม่ถูกใช้เลยบน GPU)
-# LPR_ENABLE_MKLDNN=1 ยังเปิดได้ถ้าอนาคตอัปเดต paddlepaddle แล้วบั๊กหาย
-# แต่กับรุ่นที่ใช้อยู่ตอนนี้ = พังแน่นอน
-#
-# (ต้องใส่ cpu_threads เองด้วย เพราะพอส่ง engine_config เข้าไป PaddleOCR จะใช้ค่านี้
-#  แทนค่าที่มันสร้างให้เอง — ถ้าไม่ใส่จะหล่นไปใช้ค่าดีฟอลต์ของ Paddle ที่น้อยกว่า)
-ENABLE_MKLDNN = os.environ.get("LPR_ENABLE_MKLDNN", "0") == "1"
-
-_PADDLE_ENGINE_CFG = {
-    "paddle_static": {
-        "run_mode": "mkldnn" if ENABLE_MKLDNN else "paddle",
-        "enable_new_ir": False,
-        "cpu_threads": int(os.environ.get("LPR_CPU_THREADS", "10")),
-    }
-}
-
-_ocr_kwargs = dict(
-    text_recognition_model_name=PADDLE_REC_MODEL,
-    text_detection_model_name=PADDLE_DET_MODEL,
-    use_doc_orientation_classify=False,
-    use_doc_unwarping=False,
-    use_textline_orientation=PADDLE_TEXTLINE_ORI,
-    device=PADDLE_DEVICE,
-    # ปิด oneDNN เสมอบน CPU — ทดสอบกับเครื่องจริงแล้วว่าเปิดเมื่อไหร่พังเมื่อนั้น
-    # (เหตุผลเต็ม ๆ อยู่ในคอมเมนต์ของ _PADDLE_ENGINE_CFG ด้านบน)
-    enable_mkldnn=ENABLE_MKLDNN,
-    # ปล่อย text_det_limit_* ไว้ที่ค่าเริ่มต้น (limit_type="max", 960px) —
-    # ลองสลับเป็น "min" มาก่อนแล้วแต่ขยายภาพใหญ่ (เช่นภาพเต็มเฟรมตอน fallback)
-    # แบบไม่จำกัดจนช้าลง 5 เท่า และขยายภาพ crop เล็ก ๆ 6 เท่าแบบไม่ควบคุม
-    # จนภาพที่เบลออยู่แล้วเละจนอ่านไม่ออกเลย — คุมการขยายภาพ crop เองแทน
-    # (ดู _resize_for_ocr ด้านล่าง) แม่นกว่าและเร็วกว่าปล่อยให้ Paddle ทำเอง
-)
-
-# engine_config ใส่เสมอ — ตัวที่กันบั๊กคือ enable_new_ir=False ไม่ใช่การปิด mkldnn
-# (run_mode จะถูกตั้งตาม ENABLE_MKLDNN ด้านบนแล้ว)
-_ocr_kwargs["engine_config"] = _PADDLE_ENGINE_CFG
-
-try:
-    ocr = PaddleOCR(**_ocr_kwargs)
-except (TypeError, ValueError) as e:
-    # paddleocr รุ่นเก่ายังไม่มีพารามิเตอร์ engine_config — ถอยไปใช้แบบเดิม
-    # (ยังมี enable_mkldnn=False กับ environment variable ด้านบนคุมอยู่)
-    if "engine_config" not in str(e):
-        raise
-    print(f"ℹ️  paddleocr รุ่นนี้ไม่รองรับ engine_config ({e}) — ใช้ค่าเริ่มต้นแทน")
-    _ocr_kwargs.pop("engine_config", None)
-    ocr = PaddleOCR(**_ocr_kwargs)
-
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
 print("🔥 กำลัง warm-up โมเดล...")
 try:
     _dummy = np.full((80, 240, 3), 255, dtype=np.uint8)
     detector(_dummy, verbose=False, device=YOLO_DEVICE)
-    ocr.predict(_dummy)
 except Exception as e:
     print(f"(warm-up เตือน: {e})")
 
+
+# ---------- บริการอ่านตัวอักษร: เปิดให้ + รอให้พร้อม + เรียกใช้ ----------
+_ocr_process = None
+
+
+def _ocr_alive(timeout=1.0):
+    """บริการ OCR ตอบอยู่ไหม"""
+    try:
+        r = requests.get(f"{OCR_URL}/health", timeout=timeout)
+        return r.ok and r.json().get("status") == "ok"
+    except Exception:
+        return False
+
+
+def ensure_ocr_service():
+    """
+    เปิด ocr_api.py เป็นอีกโปรเซสถ้ายังไม่มีใครเปิดไว้ แล้วรอจนพร้อมใช้งาน
+
+    ที่ต้องเปิดให้เองเพราะฝั่ง C# รู้จักแค่บริการเดียว (พอร์ต 5000) การแยก
+    โปรเซสเป็นรายละเอียดภายในของฝั่ง Python ไม่ควรไปเพิ่มภาระให้ผู้ใช้ต้อง
+    เปิดสองหน้าต่างเอง
+    """
+    global _ocr_process
+
+    if _ocr_alive():
+        print(f"🔤 พบบริการอ่านตัวอักษรที่เปิดอยู่แล้ว ({OCR_URL})")
+        return True
+
+    if not OCR_AUTOSTART:
+        print(f"⚠️  ยังไม่มีบริการอ่านตัวอักษรที่ {OCR_URL} และปิด autostart ไว้")
+        print("   เปิดเองด้วย:  python ocr_api.py")
+        return False
+
+    # ตอนรันเป็น .exe (PyInstaller) จะมี ocr_api.exe วางไว้ข้าง ๆ กัน
+    # ตอนรันด้วย Python ปกติก็เรียก python ocr_api.py
+    exe_dir = os.path.dirname(sys.executable)
+    ocr_exe = os.path.join(exe_dir, "ocr_api.exe")
+    if getattr(sys, "frozen", False) and os.path.exists(ocr_exe):
+        cmd = [ocr_exe]
+    else:
+        cmd = [sys.executable, os.path.join(BASE_DIR, "ocr_api.py")]
+
+    print(f"🚀 กำลังเปิดบริการอ่านตัวอักษร (พอร์ต {OCR_PORT})...")
+    try:
+        _ocr_process = subprocess.Popen(cmd, cwd=BASE_DIR)
+    except Exception as e:
+        print(f"❌ เปิดบริการอ่านตัวอักษรไม่สำเร็จ: {e}")
+        return False
+
+    # โหลดโมเดลครั้งแรกใช้เวลานาน (ต้องดาวน์โหลดโมเดลด้วยถ้ายังไม่เคยรัน)
+    t0 = time.time()
+    while time.time() - t0 < OCR_STARTUP_TIMEOUT:
+        if _ocr_alive():
+            print(f"✅ บริการอ่านตัวอักษรพร้อมแล้ว ({time.time() - t0:.1f}s)")
+            return True
+        if _ocr_process.poll() is not None:
+            print(f"❌ บริการอ่านตัวอักษรปิดตัวเอง (exit code {_ocr_process.returncode})")
+            return False
+        time.sleep(1.0)
+
+    print(f"⚠️  รอบริการอ่านตัวอักษรเกิน {OCR_STARTUP_TIMEOUT:.0f} วิแล้วยังไม่พร้อม")
+    return False
+
+
+def read_plate_remote(plate_img):
+    """
+    ส่งภาพป้ายไปให้บริการ OCR อ่าน คืน (เลขทะเบียน, ความมั่นใจ, บรรทัดดิบ)
+
+    บีบเป็น JPEG คุณภาพ 95 ก่อนส่ง — ภาพป้ายที่ crop มามีขนาดไม่กี่หมื่นไบต์
+    การส่งผ่าน HTTP บน 127.0.0.1 จึงใช้เวลาไม่ถึงหนึ่งมิลลิวินาที
+    """
+    if plate_img is None or plate_img.size == 0:
+        return "", 0.0, []
+
+    ok, buf = cv2.imencode(".jpg", plate_img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    if not ok:
+        return "", 0.0, []
+
+    try:
+        r = requests.post(f"{OCR_URL}/read",
+                          files={"image": ("plate.jpg", buf.tobytes(), "image/jpeg")},
+                          timeout=OCR_TIMEOUT)
+        data = r.json()
+    except Exception as e:
+        print(f"❌ เรียกบริการอ่านตัวอักษรไม่สำเร็จ: {e}")
+        return "", 0.0, []
+
+    raw = data.get("raw", []) or []
+    if data.get("status") != "success":
+        return "", 0.0, raw
+    return data.get("text", ""), float(data.get("confidence", 0.0)), raw
+
+
+ensure_ocr_service()
 print("✅ AI พร้อมทำงานแล้ว! สแตนด์บายรอรับรูปภาพที่ Port 5000")
 
-
-def _extract_lines(result):
-    """
-    แกะผลจาก PaddleOCR ให้เป็น list ของ (text, score, y_top)
-    เรียงจากบรรทัดบนลงล่าง  (บนสุด = เลขทะเบียน, ล่าง = จังหวัด)
-    เขียนแบบเผื่อ API เวอร์ชันต่างกัน (เข้าถึงได้ทั้งแบบ dict และ .json)
-    """
-    if not result:
-        return []
-    res = result[0]
-
-    texts, scores, boxes = [], [], []
-    try:
-        texts = list(res["rec_texts"])
-        scores = list(res["rec_scores"])
-        boxes = res["rec_boxes"]
-    except Exception:
-        try:
-            d = res.json
-            d = d.get("res", d)
-            texts = list(d.get("rec_texts", []))
-            scores = list(d.get("rec_scores", []))
-            boxes = d.get("rec_boxes", [])
-        except Exception:
-            return []
-
-    lines = []
-    for i, t in enumerate(texts):
-        sc = float(scores[i]) if i < len(scores) else 0.0
-        # y ด้านบนของกล่องข้อความ ใช้จัดเรียงบรรทัด
-        try:
-            y_top = float(boxes[i][1])
-        except Exception:
-            y_top = float(i)
-        if sc >= MIN_LINE_SCORE and str(t).strip():
-            lines.append((str(t).strip(), sc, y_top))
-
-    lines.sort(key=lambda x: x[2])   # บนลงล่าง
-    return lines
 
 def detect_best_plate(frame, imgsz=None):
     """
@@ -414,82 +338,6 @@ def deskew_plate(img, max_angle=25.0):
                               borderMode=cv2.BORDER_REPLICATE)
     except Exception:
         return img
-
-def _resize_for_ocr(img):
-    """
-    ขยายภาพเล็กให้ใหญ่ขึ้นก่อนส่งให้ PaddleOCR แบบควบคุมเอง (ไม่พึ่งค่าเริ่มต้น
-    ของ text detection) — บรรทัดจังหวัดบนป้ายตัวเล็กกว่าทะเบียนมาก ถ้าภาพเดิม
-    เล็กเกินไป PaddleOCR อาจตรวจไม่เจอบรรทัดนั้นเลย
-
-    จำกัดอัตราขยายไว้ไม่ให้เกินไป (MAX_UPSCALE) เพราะเคยลองปล่อยให้ PaddleOCR
-    ขยายเองแบบไม่จำกัด (text_det_limit_type="min") แล้วภาพเล็กมาก ๆ ที่คุณภาพ
-    ต่ำอยู่แล้วโดนขยายเกิน 6 เท่า กลายเป็นเบลอจนอ่านไม่ออกเลยทั้งภาพ
-    (แย่กว่าตอนไม่ขยายเลยเสียอีก) จึงขยายแค่พอประมาณและเฉพาะตอนภาพเล็กจริง ๆ
-    """
-    h = img.shape[0]
-    if h >= TARGET_OCR_HEIGHT:
-        return img
-    scale = min(MAX_UPSCALE, TARGET_OCR_HEIGHT / h)
-    if scale <= 1.05:      # ใกล้เคียงเป้าหมายอยู่แล้ว ไม่คุ้มเสียเวลาขยาย
-        return img
-    new_w = max(1, int(round(img.shape[1] * scale)))
-    new_h = max(1, int(round(h * scale)))
-    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-
-
-def read_plate_paddle(plate_img, return_raw=False):
-    """
-    อ่านป้ายด้วย PaddleOCR ภาษาไทย แล้วดัดผลให้เข้ารูปแบบป้ายไทย
-    คืน (เลขทะเบียน, ความมั่นใจ) — หรือเพิ่ม list บรรทัดดิบต่อท้ายเป็นค่าที่ 3
-    ถ้า return_raw=True (ไว้ debug ว่า PaddleOCR เห็นข้อความอะไรบ้างก่อนดัด)
-
-    โมเดลที่ใช้เป็นโมเดลอ่านข้อความไทยทั่วไป ไม่ได้เทรนเฉพาะป้ายทะเบียน
-    ผลดิบจึงมักเพี้ยน ต้องพึ่ง thai_plate.py ช่วยดัด (แก้เลข/เทียบชื่อจังหวัด)
-
-    หมายเหตุ: อ่านเฉพาะ "เลขทะเบียน" เท่านั้น ไม่อ่านชื่อจังหวัดแล้ว
-    (ตัดออกเมื่อ 2569-09-15) เพราะตัวอักษรจังหวัดเล็กกว่าเลขทะเบียนมาก
-    วัดจากภาพทดสอบจริงได้ เลขทะเบียนถูก 4/4 แต่จังหวัดถูกแค่ 1/4
-    และจังหวัดไม่เคยถูกใช้ตัดสินเปิด-ปิดไม้กั้นเลย — ที่โชว์บนหน้าจอและ
-    บันทึกประวัติใช้จังหวัดจากฐานข้อมูลที่ลงทะเบียนไว้ ซึ่งถูกต้องเสมอ
-    """
-    if plate_img is not None and plate_img.size > 0:
-        # ขยายก่อนเติมขอบ (ดู _resize_for_ocr) กันบรรทัดจังหวัดตัวเล็กเกินตรวจจับ
-        plate_img = _resize_for_ocr(plate_img)
-
-        # เติมขอบขาวรอบภาพก่อนส่งให้ OCR — ตัวตรวจจับข้อความของ Paddle มักหาไม่เจอ
-        # ถ้าตัวหนังสือชิดขอบภาพพอดี (ซึ่งเป็นเรื่องปกติของ crop ที่ได้จาก YOLO)
-        pad = max(8, int(plate_img.shape[0] * 0.15))
-        plate_img = cv2.copyMakeBorder(plate_img, pad, pad, pad, pad,
-                                       cv2.BORDER_CONSTANT, value=(255, 255, 255))
-
-    # PaddleOCR ไม่ปลอดภัยเมื่อถูกเรียกพร้อมกันหลาย thread และ Flask รันแบบ threaded
-    # จึงต้องล็อกไว้เหมือนตอนเรียก YOLO
-    with model_lock:
-        result = ocr.predict(plate_img)
-
-    # lines: [(ข้อความ, คะแนน, y_top), ...] — ใช้ debug ได้ว่า PaddleOCR เจอกี่บรรทัด
-    # (ถ้าเจอบรรทัดเดียว = text detection ไม่เจอบรรทัดจังหวัดเลย ไม่ใช่ดัดไม่ตรง)
-    lines = _extract_lines(result)
-    if not lines:
-        return ("", "", 0.0, []) if return_raw else ("", "", 0.0)
-
-    parsed = parse_plate_lines(lines)
-    plate_text = parsed["plate"]
-
-    if SAVE_DEBUG_PLATE:
-        print(f"   [paddle] อ่านดิบ: {parsed['raw']}")
-
-    # ความมั่นใจ: ใช้ของบรรทัดเลขทะเบียนเป็นหลัก เพราะเป็นตัวตัดสินการเข้า-ออก
-    # ถ้าดัดเป็นทะเบียนไม่ได้เลย ให้ถือว่าอ่านไม่สำเร็จ (คะแนนเฉลี่ยไว้ดูเฉย ๆ)
-    if plate_text:
-        conf = parsed["plate_score"]
-    else:
-        conf = sum(l[1] for l in lines) / len(lines)
-
-    if return_raw:
-        return plate_text, conf, lines
-    return plate_text, conf
-
 
 @app.route("/detect", methods=["POST"])
 def detect():
@@ -615,13 +463,13 @@ def predict():
             return jsonify({"status": "error", "message": "crop ป้ายว่าง"})
         plate = deskew_plate(plate)      # หมุนป้ายที่เอียงให้ตรงก่อนอ่าน
 
-        # --- 3. อ่านตัวอักษรบนป้าย (PaddleOCR หรือ YOLO ตามที่ตั้งไว้) ---
+        # --- 3. อ่านตัวอักษรบนป้าย (ส่งไปให้ ocr_api.py อีกโปรเซส) ---
         if SAVE_DEBUG_PLATE:
             cv2.imwrite("debug_plate.jpg", plate)
 
         # ขอ raw lines มาด้วยตั้งแต่รอบแรก จะได้ไม่ต้องเรียก OCR ซ้ำตอนอ่านไม่ออก
         t_ocr0 = time.time()
-        plate_text, confidence, raw_lines = read_plate_paddle(plate, return_raw=True)
+        plate_text, confidence, raw_lines = read_plate_remote(plate)
         t_ocr = time.time() - t_ocr0
         t_ocr_extra = 0.0
 
@@ -640,7 +488,7 @@ def predict():
         suspicious = crop_ratio < MIN_PLATE_ASPECT or not plate_text or len(plate_text) < 5
         if suspicious:
             t_extra0 = time.time()
-            alt_text, alt_conf, alt_raw = read_plate_paddle(frame, return_raw=True)
+            alt_text, alt_conf, alt_raw = read_plate_remote(frame)
             t_ocr_extra = time.time() - t_extra0
             # เลือกผลที่ "สมบูรณ์กว่า" โดยดูจากความยาว — ถ้ากรอบตัดขาดจริง ผลจาก
             # ภาพเต็มควรยาวกว่า (ไม่ได้ตัด) ถ้าอ่านจากกรอบได้ครบอยู่แล้วก็ไม่เปลี่ยน
@@ -657,9 +505,8 @@ def predict():
             # ข้อมูลเดียวที่ใช้ไล่ปัญหาได้ว่าติดที่ "ป้ายเล็กเกินไป" หรือ "OCR เห็น
             # ข้อความแต่ดัดไม่เข้ารูปทะเบียน" ซึ่งแก้กันคนละทาง
             ch, cw = plate.shape[:2]
-            seen = " | ".join(f"{t!r}({sc:.2f})" for t, sc, _ in raw_lines) or "(ไม่เห็นข้อความเลย)"
-            print(f"   ℹ️ crop ป้าย {cw}x{ch}px -> ขยายเป็นสูง "
-                  f"{min(MAX_UPSCALE, TARGET_OCR_HEIGHT / max(1, ch)) * ch:.0f}px | OCR เห็น: {seen}")
+            seen = " | ".join(repr(t) for t in raw_lines) or "(ไม่เห็นข้อความเลย)"
+            print(f"   ℹ️ crop ป้าย {cw}x{ch}px | OCR เห็น: {seen}")
             return jsonify({"status": "error", "message": f"อ่านตัวอักษรบนป้ายไม่ได้ (ป้าย {cw}x{ch}px)"})
 
         # แยกเวลาแต่ละขั้นให้เห็นชัดว่าช้าตรงไหน (ไม่งั้นเดาไม่ถูกว่าจะไปแก้จุดไหน)
@@ -687,6 +534,21 @@ def predict():
         # ไม่งั้น /detect จะหลบทางค้างตลอดกาล แล้วกรอบจะไม่ขึ้นอีกเลย
         with _predict_lock:
             _predict_pending -= 1
+
+
+@atexit.register
+def _stop_ocr_service():
+    """ปิดโปรเซสลูกตามไปด้วย ไม่ให้ค้างเป็นผีกินแรมและจอง GPU ทิ้งไว้"""
+    if _ocr_process is None or _ocr_process.poll() is not None:
+        return
+    try:
+        _ocr_process.terminate()
+        _ocr_process.wait(timeout=5)
+    except Exception:
+        try:
+            _ocr_process.kill()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
