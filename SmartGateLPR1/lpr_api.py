@@ -260,26 +260,27 @@ _PADDLE_ENGINE_CFG = {
     }
 }
 
-# ---------- ทางเลือกเอนจิน: onnxruntime แทน paddle inference เดิม ----------
+# ---------- เอนจินหลัก: onnxruntime (เร็วกว่า paddle inference เดิมมาก) ----------
 #
 # วัดจริงจากเครื่องที่ใช้งาน (log จริง ไม่ใช่ค่าประมาณ): ครอปป้ายแค่ 145x86px
-# กับ 136x82px (เล็กมาก) แต่ OCR ใช้เวลา 1.35s และ 1.71s ตามลำดับ — เวลาไม่ได้
-# แปรผันตามขนาดภาพเลย แปลว่าเป็น "ต้นทุนคงที่ต่อการเรียกหนึ่งครั้ง" ของตัว
-# เอนจิน ไม่ใช่ปัญหาขนาดภาพอีกต่อไป ซึ่งเข้าได้กับที่ oneDNN ถูกบังคับปิดไว้
+# กับ 136x82px (เล็กมาก) แต่ OCR ใช้เวลา 1.35s และ 1.71s ตามลำดับตอนใช้ paddle
+# เอนจินเดิม — เวลาไม่ได้แปรผันตามขนาดภาพเลย แปลว่าเป็น "ต้นทุนคงที่ต่อการ
+# เรียกหนึ่งครั้ง" ของตัวเอนจินเอง ซึ่งเข้าได้กับที่ oneDNN ถูกบังคับปิดไว้
 # (ดูเหตุผลด้านบน) — inference บน CPU แบบไม่มี oneDNN ช้ากว่าเป็นเท่าตัว
 #
-# PaddleX รองรับสลับเอนจินเป็น onnxruntime อย่างเป็นทางการ (ดู
-# paddlex/inference/models/runners/onnxruntime_runner.py) ซึ่งมักเร็วกว่า
-# paddle inference เองบน CPU มาก เพราะไม่ต้องแบกภาระของ pipeline/IR ชั้นบน
-# ของ paddle เอง — engine="onnxruntime" ให้ paddlex แปลงโมเดลเป็น .onnx
-# อัตโนมัติ (ครั้งแรกใช้เวลานานกว่าปกติ) แล้วรันด้วย onnxruntime แทน
+# สลับมาใช้ onnxruntime (ผ่าน PaddleX ที่รองรับอย่างเป็นทางการ — ดู
+# paddlex/inference/models/runners/onnxruntime_runner.py) แล้วทดสอบจริงบน
+# เครื่องที่ใช้งาน: เร็วขึ้นชัดเจนและอ่านถูกต้องเหมือนเดิม จึงตั้งเป็นเอนจิน
+# หลักตั้งแต่นี้ไป — engine="onnxruntime" ให้ paddlex แปลงโมเดลเป็น .onnx
+# อัตโนมัติแล้วแคชไว้ (ครั้งแรกที่รันจะช้ากว่าปกติเพราะต้องแปลงก่อน)
 #
-# ⚠️ ยังไม่ได้วัดผลจริงว่าเร็วขึ้นแค่ไหน (ต้อง pip install onnxruntime และ
-# ทดสอบบนเครื่องจริงที่มีการ์ดจอ/ซีพียูตัวนี้เท่านั้น) จึงปิดไว้เป็นค่าเริ่มต้น
-# เปิดทดลองได้ด้วย LPR_OCR_ENGINE=onnxruntime — ถ้าใช้ไม่ได้ (ไม่ได้ลง
-# onnxruntime ไว้ หรือรุ่น paddleocr ไม่รองรับ) จะถอยไปใช้ paddle เหมือนเดิม
-# ให้เองอัตโนมัติ ไม่ทำให้ระบบพัง
-OCR_ENGINE = os.environ.get("LPR_OCR_ENGINE", "").strip() or None
+# ยังมีเส้นทางถอยกลับไปใช้ paddle เอนจินเดิมให้เองอัตโนมัติถ้า onnxruntime
+# ใช้ไม่ได้ (เช่น ลืม pip install onnxruntime หลังย้ายเครื่อง/ลง Python ใหม่)
+# กันไม่ให้ระบบพังทั้งหมดเพราะแพ็กเกจเดียวขาดหาย — ตั้ง LPR_OCR_ENGINE=paddle
+# ได้ถ้าอยากบังคับกลับไปใช้เอนจินเดิมด้วยเหตุผลอื่น
+OCR_ENGINE = os.environ.get("LPR_OCR_ENGINE", "onnxruntime").strip()
+if OCR_ENGINE.lower() in ("", "paddle", "none"):
+    OCR_ENGINE = None
 
 _ocr_kwargs = dict(
     text_recognition_model_name=PADDLE_REC_MODEL,
@@ -312,16 +313,18 @@ except (TypeError, ValueError) as e:
         raise
 except Exception as e:
     if OCR_ENGINE:
-        # เอนจินที่ขอ (เช่น onnxruntime) ใช้ไม่ได้ — อาจไม่ได้ลงแพ็กเกจไว้
-        # หรือโมเดลแปลงไม่ผ่าน — ถอยไปใช้ paddle engine ปกติแทนเสมอ
-        print(f"⚠️  เปิดเอนจิน '{OCR_ENGINE}' ไม่สำเร็จ ({e}) — ใช้เอนจิน paddle ปกติแทน", flush=True)
+        # เอนจินหลัก (onnxruntime) ใช้ไม่ได้ — อาจลืม pip install onnxruntime
+        # ไว้หลังย้ายเครื่อง/ลง Python ใหม่ — ถอยไปใช้ paddle engine เดิมแทน
+        # (ช้ากว่าแต่ยังใช้งานได้ ดีกว่าระบบพังทั้งหมด)
+        print(f"⚠️  เปิดเอนจิน '{OCR_ENGINE}' ไม่สำเร็จ ({e}) — ใช้เอนจิน paddle เดิมแทน", flush=True)
+        print("   💡 ถ้าอยากได้ความเร็วปกติ ลง onnxruntime แล้วรันใหม่: pip install onnxruntime", flush=True)
         _ocr_kwargs.pop("engine", None)
         ocr = PaddleOCR(**_ocr_kwargs)
     else:
         raise
 else:
     if OCR_ENGINE:
-        print(f"⚡ ใช้เอนจิน '{OCR_ENGINE}' แทน paddle inference เดิม (ทดลอง)", flush=True)
+        print(f"⚡ ใช้เอนจิน '{OCR_ENGINE}' อ่านตัวอักษร (เร็วกว่า paddle เดิม)", flush=True)
 
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
 print("🔥 กำลัง warm-up โมเดล...", flush=True)

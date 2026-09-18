@@ -22,6 +22,10 @@ torchvision>=0.15
 # PaddleOCR 3.x ใช้ API แบบ ocr.predict() และมีโมเดลภาษาไทย th_PP-OCRv5_mobile_rec
 paddleocr>=3.0.0
 paddlepaddle>=3.0.0
+# เอนจินหลักที่ใช้รันจริง (เร็วกว่า paddle เดิมมาก วัดผลจริงแล้ว — ดูเหตุผล
+# เต็ม ๆ ที่ตัวแปร OCR_ENGINE ใน lpr_api.py) ถ้าลืมลงตัวนี้ ระบบจะถอยไปใช้
+# paddle เอนจินเดิมให้เอง (ช้ากว่า) ไม่ถึงกับพัง แต่ควรลงไว้เสมอ
+onnxruntime>=1.17
 
 # ---- อื่น ๆ ----
 flask>=3.0
