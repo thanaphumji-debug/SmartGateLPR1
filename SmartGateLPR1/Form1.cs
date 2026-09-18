@@ -1661,22 +1661,38 @@ namespace SmartGateLPR1
         {
             lock (turnLock)
             {
-                // ส่งผลเข้าศูนย์ตัดสินใจไปแล้ว → หยุดอ่าน รอผลตัดสิน
-                // (มีเพดานเวลากันค้าง เผื่อมีเส้นทางที่ผลไม่ออกสักที)
-                if (plateSubmitted[camId])
+                // ล็อกไว้รอตรวจทาน (plateLocked) หรือส่งไปตัดสินแล้วรอผล (plateSubmitted)
+                // ทั้งสองสถานะต้อง "แอบอ่านทวนเป็นระยะ" เหมือนกัน ไม่งั้นถ้าป้ายที่
+                // เห็นอยู่จริง ๆ ถูกสลับเป็นคันใหม่ระหว่างรอ (กล้องไม่เคย "มองไม่เห็น
+                // ป้าย" เลยสักครั้ง) กรอบ+เลขบนจอจะค้างของป้ายเก่าไปจนกว่าจะครบ
+                // submitHoldMaxSec (12 วิ) ซึ่งนานเกินไปสำหรับผู้ใช้ที่กำลังทดสอบอยู่
+                //
+                // แก้โดยให้ทั้งสองสถานะใช้จังหวะรีเช็กเดียวกันคือ relockRecheckSec (2 วิ)
+                // — เดิม plateSubmitted เช็คก่อนแล้วบล็อกอ่านยาวไปจนครบ submitHoldMaxSec
+                // เลย ไม่เคยไปถึงจังหวะรีเช็กของ plateLocked ด้านล่างนี้เลย
+                if (plateLocked[camId] || plateSubmitted[camId])
                 {
-                    if ((DateTime.Now - plateSubmittedAt[camId]).TotalSeconds < submitHoldMaxSec)
-                        return false;
-                    plateSubmitted[camId] = false;   // รอนานผิดปกติ กลับไปอ่านใหม่
-                }
-                if (plateLocked[camId])
-                {
-                    // ยังไม่ถึงเวลาตรวจทาน → พักไว้ก่อน ไม่เปลืองรอบ OCR
-                    if ((DateTime.Now - plateLockedAt[camId]).TotalSeconds < relockRecheckSec)
-                        return false;
-                    // ถึงเวลาแล้ว → ปล่อยให้อ่านหนึ่งรอบ เช็คว่ายังเป็นป้ายเดิมอยู่ไหม
-                    // (เลื่อนเวลาไว้ก่อนเลย กันยิงซ้ำรัว ๆ ระหว่างรอผลรอบนี้)
-                    plateLockedAt[camId] = DateTime.Now;
+                    bool dueForRecheck = (DateTime.Now - plateLockedAt[camId]).TotalSeconds >= relockRecheckSec;
+                    if (!dueForRecheck)
+                    {
+                        // ยังไม่ถึงคิวรีเช็ก — แต่ถ้าค้างสถานะ "ส่งไปตัดสินแล้ว" นานผิดปกติ
+                        // (ผลตัดสินไม่ออกสักที) ให้ปลดกลับไปอ่านใหม่กันค้างตายตัว
+                        if (plateSubmitted[camId] &&
+                            (DateTime.Now - plateSubmittedAt[camId]).TotalSeconds >= submitHoldMaxSec)
+                        {
+                            plateSubmitted[camId] = false;
+                        }
+                        else
+                        {
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        // ถึงเวลาแล้ว → ปล่อยให้อ่านหนึ่งรอบ เช็คว่ายังเป็นป้ายเดิมอยู่ไหม
+                        // (เลื่อนเวลาไว้ก่อนเลย กันยิงซ้ำรัว ๆ ระหว่างรอผลรอบนี้)
+                        plateLockedAt[camId] = DateTime.Now;
+                    }
                 }
                 if (lprOwner == camId) return true;              // ถืออยู่แล้ว
                 if (lprOwner == 0)
@@ -1730,10 +1746,17 @@ namespace SmartGateLPR1
                     {
                         // อ่านได้คนละเลขกับที่ค้างไว้ = คนละคัน/เปลี่ยนป้ายแล้ว
                         // ทิ้งผลเก่าทั้งหมดแล้วเริ่มนับยืนยันของเลขใหม่
+                        //
+                        // ต้องล้าง plateSubmitted ด้วย ไม่ใช่แค่ plateLocked — ไม่งั้น
+                        // พอป้ายใหม่ยืนยันครบแล้ว (อาจครบตั้งแต่รอบเดียวถ้า conf สูง)
+                        // SendToAI จะเห็น plateSubmitted[camId] เป็น true ค้างจากป้าย
+                        // เก่าอยู่ (เช็คเงื่อนไข "confirmed && !plateSubmitted[camId]")
+                        // จึงไม่ส่งป้ายใหม่เข้าศูนย์ตัดสินใจเลย ทั้งที่ยืนยันได้แล้วจริง ๆ
                         plateChanged = lastReadPlate[camId] != "";
                         lastReadPlate[camId] = plateRead;
                         confirmCount[camId] = 1;
                         plateLocked[camId] = false;
+                        plateSubmitted[camId] = false;
                         bestConf[camId] = conf;
                     }
 
