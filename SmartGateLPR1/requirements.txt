@@ -1,28 +1,24 @@
-# แพ็กเกจของฝั่ง AI — ติดตั้งด้วย:  pip install -r requirements.txt
+# แพ็กเกจของฝั่ง AI (lpr_api.py) — ติดตั้งด้วย:  pip install -r requirements.txt
 #
-# ฝั่ง AI แยกเป็นสองโปรเซส (สองไฟล์) ที่คุยกันผ่าน HTTP บน 127.0.0.1
-#   lpr_api.py  พอร์ต 5000 = YOLO + torch   (โปรแกรม C# คุยกับตัวนี้)
-#   ocr_api.py  พอร์ต 5001 = PaddleOCR      (lpr_api.py เปิดให้เองอัตโนมัติ)
+# ⛔ ลง paddlepaddle รุ่น CPU เท่านั้น อย่าลง paddlepaddle-gpu
 #
-# ⚠️ ห้ามรวมกลับเป็นโปรเซสเดียว: torch กับ paddle อยู่ด้วยกันไม่ได้เมื่อทั้งคู่
-# เป็นรุ่น GPU จะพังตอน import ด้วย
+# lpr_api.py รวม YOLO (torch) กับ PaddleOCR (paddle) ไว้ในโปรเซสเดียวกัน
+# ถ้า paddle เป็นรุ่น GPU จะพังตอน import ด้วย
 #     ImportError: generic_type: type "_gpuDeviceProperties" is already registered!
-# เพราะทั้งสองไลบรารีผูก struct ของ CUDA เข้ากับ Python ผ่าน pybind11 โดยใช้ชื่อ
-# ชนิดข้อมูลเดียวกัน และ pybind11 มีทะเบียนชนิดข้อมูลชุดเดียวต่อหนึ่งโปรเซส
+# เพราะ torch กับ paddle รุ่น GPU ต่างก็ผูก struct ของ CUDA เข้ากับ Python
+# ผ่าน pybind11 โดยใช้ชื่อชนิดข้อมูลเดียวกัน และ pybind11 มีทะเบียนชนิดข้อมูล
+# ชุดเดียวต่อหนึ่งโปรเซส ใครโหลดทีหลังจึงลงทะเบียนซ้ำไม่ได้
 #
-# หมายเหตุเรื่อง GPU:
-#   ไฟล์นี้ลง torch/paddle รุ่น CPU ถ้ามีการ์ดจอ NVIDIA และอยากรันบน GPU
-#   ให้ลง torch ตามคำสั่งจาก https://pytorch.org (เลือก CUDA ให้ตรงกับไดรเวอร์)
-#   และลง paddlepaddle-gpu แทน paddlepaddle — ตอนนี้ลงทั้งคู่เป็นรุ่น GPU ได้แล้ว
-#   เพราะแยกโปรเซสกันแล้ว
+# YOLO (torch) ยังใช้ GPU ได้ตามปกติถ้ามีการ์ดจอ — ที่ต้องเป็น CPU คือ
+# paddlepaddle (ตัวเดียว) เท่านั้น
 
-# ---- ตรวจจับป้าย (lpr_api.py) ----
+# ---- ตรวจจับป้าย ----
 # ต้อง >= 8.3.0 ขึ้นไป ถึงจะรองรับโมเดล YOLO11 (รุ่นก่อนหน้ารองรับแค่ถึง YOLOv8/v10)
 ultralytics>=8.3.0
 torch>=2.0
 torchvision>=0.15
 
-# ---- อ่านตัวอักษรบนป้าย (ocr_api.py) ----
+# ---- อ่านตัวอักษรบนป้าย ----
 # PaddleOCR 3.x ใช้ API แบบ ocr.predict() และมีโมเดลภาษาไทย th_PP-OCRv5_mobile_rec
 paddleocr>=3.0.0
 paddlepaddle>=3.0.0
@@ -31,5 +27,3 @@ paddlepaddle>=3.0.0
 flask>=3.0
 opencv-python>=4.8
 numpy>=1.24
-# lpr_api.py ใช้เรียกบริการอ่านตัวอักษรผ่าน HTTP
-requests>=2.28
