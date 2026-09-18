@@ -90,37 +90,26 @@ namespace SmartGateLPR1
         // ความมั่นใจสูงสุดของเลขที่กล้องนั้นยืนยัน (ใช้เลือกฝั่งที่น่าเชื่อกว่าตอนหน้า-หลังไม่ตรงกัน)
         private double[] bestConf = new double[3];
         // กันค้าง: ส่งไปแล้วแต่ผลตัดสินไม่ออกสักทีภายในกี่วินาที ให้กลับไปอ่านใหม่
-        // ต้องมากกว่า otherCamHardCapSec เสมอ ไม่งั้นกล้องที่ส่งไปแล้วจะปลดล็อก
+        // ต้องมากกว่า decideWaitSec เสมอ ไม่งั้นกล้องที่ส่งไปแล้วจะปลดล็อก
         // กลับไปอ่านใหม่ทั้งที่ศูนย์ตัดสินใจยังรออีกกล้องอยู่
         private double submitHoldMaxSec = 20.0;
-        // เพดานการรออีกกล้อง (วินาที)
+        // ===== นาฬิกาเดียวของการรอ =====
         //
-        // ไม่ได้รอตายตัวตามเวลา แต่รอตาม "อีกกล้องกำลังทำอะไรอยู่":
-        //   เห็นป้ายอยู่ / กำลังอ่านเลขอยู่  → รอต่อไปเรื่อย ๆ จนกว่าจะเสร็จ
-        //   ตรวจไม่เจอป้ายเลย                → ตัดสินทันที ไม่ต้องรอ
-        // เพดานนี้เป็นแค่ตัวกันค้าง เผื่อกล้องเห็นป้ายแต่อ่านไม่ออกสักที
-        private double otherCamMaxWaitSec = 15.0;
-        // เพดานแข็ง: ต่อให้อีกกล้องยังยิงอ่านค้างอยู่ ก็ไม่รอเกินค่านี้
-        private double otherCamHardCapSec = 18.0;
-        // อีกกล้อง "ตรวจไม่เจอป้ายเลย" ให้รอกี่วินาทีก่อนตัดสินด้วยผลกล้องเดียว
+        // เดิมเวลารอถูกคำนวณจากธงหลายตัวปนกัน (plateSubmittedAt, plateSubmitted,
+        // isReading, plateSeen, confirmCount) ซึ่งโค้ดส่วนอื่นรีเซ็ตได้ด้วยเหตุผล
+        // ของตัวเอง เช่น ResetLprTurnCam ล้าง plateSubmittedAt เป็น MinValue ตอน
+        // ป้ายหลุดเฟรมไป 1 วิ พอเป็นแบบนั้นการรอจะ "ยุบทันที" แล้วตัดสินเดี๋ยวนั้น
+        // ผลคือเวลาที่ได้ไม่ตายตัวเลย วัดหน้างานได้ 6 บ้าง 9 บ้าง 12 บ้าง
         //
-        // เดิมตัดสินทันที ซึ่งเร็วเกินไป — จังหวะที่กล้องแรกส่งผล อีกกล้องอาจกำลัง
-        // อยู่ระหว่างเฟรมที่ยังจับกรอบไม่ติด (รถเพิ่งเข้าเฟรม/ป้ายเอียง) พอรอสัก
-        // ครู่มันก็เจอ แต่ผลตัดสินออกไปก่อนแล้ว กลายเป็น "อ่านได้จากกล้องเดียว"
-        // ทั้งที่จริง ๆ อ่านได้ทั้งคู่
-        //
-        // เคยตั้งไว้ 3 วิ ซึ่งยังสั้นไป ผู้ใช้วัดจากหน้างานได้ 3 วิบ้าง 6-8 วิบ้าง
-        // (ต่างกันเพราะถ้าอีกกล้องเผลอจับกรอบติดแวบหนึ่ง ตัวนับจะถูกเลื่อนออกไป
-        // ทีละ otherCamIdleSec) ตอนนี้ตั้ง 15 วิเท่ากับเวลารอตัวอื่น ๆ ทั้งชุด
-        // ทั้งสองทิศทาง (หน้าส่ง-หลังไม่เจอ / หลังส่ง-หน้าไม่เจอ) จึงรอเท่ากันแน่นอน
-        private double noPlateWaitSec = 15.0;
-        // อีกกล้องต้อง "ไม่เห็นกรอบป้ายเลย" ต่อเนื่องกี่วินาที ถึงจะนับว่าว่างจริง
-        //
-        // เดิมดูแค่ธง ณ วินาทีนั้น (isReading / plateSeen / confirmCount) ซึ่งกระพริบ
-        // ตลอดเวลา — ว่างระหว่างยิง OCR แต่ละรอบบ้าง ตัวนับพลาดเฟรมบ้าง พอ TryDecide
-        // มาเช็คตรงจังหวะที่บังเอิญว่างครบทั้งสามธง ก็เลิกรอตั้งแต่ 3 วิ (noPlateWaitSec)
-        // ทั้งที่กล้องนั้นกำลังอ่านป้ายอยู่แท้ ๆ → ผลออกที่ 8-9 วิแทนที่จะรอครบ 15 วิ
-        private double otherCamIdleSec = 2.5;
+        // ตอนนี้ใช้เส้นตายเดียว (decideWaitUntil) เป็นตัวตัดสินว่ารอต่อหรือพอ:
+        //   แตะบัตร              -> ตั้งเส้นตาย = ตอนนี้ + decideWaitSec
+        //   กล้องตัวใดส่งเลขเข้ามา -> ตั้งเส้นตายใหม่ = ตอนนี้ + decideWaitSec (เริ่มนับ 1 ใหม่)
+        //   ได้ครบทั้งสองกล้อง     -> ตัดสินทันที ไม่ต้องรอ
+        // ไม่ขึ้นกับธงที่กระพริบอีกต่อไป เวลาจึงคงที่แน่นอนทั้งสองทิศทาง
+        private int decideWaitSec = 15;
+        private DateTime decideWaitUntil = DateTime.MinValue;
+        // เผื่อเวลาให้เส้นทางปกติได้ตัดสินก่อน แล้วตัวกันค้างค่อยเข้าแทรก
+        private double decideBackstopGraceSec = 3.0;
         // ล็อกแล้วอ่านซ้ำเพื่อ "ตรวจทาน" ทุกกี่วินาที
         //
         // เดิมล็อกแล้วคือหยุดอ่านถาวร จนกว่าจะครบรอบเปิด-ปิดไม้กั้น (ResetLprTurn)
@@ -219,18 +208,19 @@ namespace SmartGateLPR1
         // ===== เวลาทุกเงื่อนไข (ปรับให้กระชับ รถจะได้ไม่ต้องจอดรอนาน) =====
         // สองฝั่ง (บัตร / ป้าย) ต้องมาห่างกันไม่เกินกี่วินาที ถึงจะถือว่าเป็นคันเดียวกัน
         //
-        // ⚠️ ค่านี้ต้องมากกว่า "เวลารอ" ทุกตัวเสมอ (otherCamHardCapSec, noPlateGraceSec,
-        // plateUnconfirmedWaitSec) ไม่งั้นจะค้างตายสนิท:
+        // ⚠️ ค่านี้ต้องครอบคลุมเวลารอที่ยาวที่สุดที่เป็นไปได้ คือ "รอจนเกือบหมด
+        // noPlateGraceSec แล้วกล้องเพิ่งส่งเลขเข้ามาพอดี จึงเริ่มนับ decideWaitSec
+        // ใหม่อีกรอบ" = noPlateGraceSec + decideWaitSec ไม่งั้นจะค้างตายสนิท:
         // ตอนตั้ง 10 วิ แล้วขยับเวลารอเป็น 15-18 วิ เคยเกิดอาการ "แตะบัตรแล้ว กล้อง
         // ส่งเลขแล้ว แต่ไม่ตัดสินสักที" เพราะพอเลย 10 วิ TryDecide จะมองว่าบัตร
         // หมดอายุ (rfidFresh = false) แล้ว return ทิ้งทุกครั้ง ส่วนตัวจับเวลาก็เข้า
         // เคสไหนไม่ได้เลย (เคส A/A2/A3 ต้องไม่มีป้าย แต่ป้ายดิบยังค้างอยู่) สุดท้าย
         // ไม่มีใครตัดสินให้เลยสักทาง
-        private int hybridWindowSec = 25;
+        private int hybridWindowSec = 45;
         // กันค้างขั้นสุดท้าย: แตะบัตรมาแล้วเกินกี่วินาที ถ้ายังไม่มีใครตัดสินให้
         // ให้บังคับตัดสินด้วยข้อมูลเท่าที่มีทันที (ดู forceDecideNow)
         // ต้องมากกว่าเวลารอทุกตัว แต่ต้องน้อยกว่า hybridWindowSec
-        private int decideDeadlineSec = 20;
+        private int decideDeadlineSec = 35;
         // ธงบังคับตัดสิน — ตั้งโดยตัวจับเวลาเมื่อครบ decideDeadlineSec
         // ทำให้ ShouldWaitForOtherCam เลิกรอทันที และ TryDecide ไม่กรองอายุข้อมูล
         private bool forceDecideNow = false;
@@ -1177,6 +1167,7 @@ namespace SmartGateLPR1
             {
                 sawMismatch = false; retryCount = 0; plateSeenNoTagAt = DateTime.MinValue;
                 forceDecideNow = false;      // จบรอบแล้ว เลิกโหมดกันค้าง
+                decideWaitUntil = DateTime.MinValue;
             }
             // สำคัญ: ปลดล็อกป้ายที่ค้างไว้ของคันก่อนหน้า ไม่งั้นกล้องจะไม่อ่านป้ายให้คันถัดไปอีกเลย
             lastDecidedTag = logTag;
@@ -1215,6 +1206,7 @@ namespace SmartGateLPR1
                 pendingRfidTime = DateTime.Now;
                 plateSeenNoTagAt = DateTime.MinValue;
                 forceDecideNow = false;      // บัตรใบใหม่ เริ่มนับเวลากันค้างใหม่
+                RestartDecideWait();         // แตะบัตรแล้ว เริ่มนับ 1 ถึง decideWaitSec
                 retryCount = 0;              // บัตรใบใหม่ เริ่มนับรอบอ่านซ้ำใหม่
             }
             this.BeginInvoke(new Action(() =>
@@ -1305,63 +1297,44 @@ namespace SmartGateLPR1
         ///   เห็นป้ายอยู่ หรือกำลังอ่านเลขอยู่ → รอต่อ (มันกำลังจะได้คำตอบ)
         ///   ตรวจไม่เจอป้ายเลย                 → ไม่ต้องรอ ตัดสินได้เลย
         ///
-        /// มีเพดาน otherCamMaxWaitSec กันค้างกรณีเห็นป้ายแต่อ่านไม่ออกสักที
+        /// รอจนถึง decideWaitUntil ซึ่งเริ่มนับใหม่ทุกครั้งที่มีกล้องส่งเลขเข้ามา
         /// คืนเหตุผลออกมาทาง waitReason ไว้โชว์บนหน้าจอด้วย</summary>
         private bool ShouldWaitForOtherCam(string p1, string p2, out string waitReason)
         {
             waitReason = "";
-            // ครบสองฝั่งแล้ว = ได้เลขจากกล้องทั้งสองตัว → ตัดสินทันที ไม่ต้องรออะไรอีก
-            if (p1 != "" && p2 != "") return false;
+            if (p1 != "" && p2 != "") return false;          // ครบสองฝั่งแล้ว -> ตัดสินทันที
             if (p1 == "" && p2 == "") return false;          // ยังไม่มีสักฝั่ง
 
-            // โหมดกันค้าง: ครบกำหนดแล้ว เลิกรอทุกกรณี
-            lock (hybridLock) { if (forceDecideNow) return false; }
+            DateTime until;
+            lock (hybridLock)
+            {
+                if (forceDecideNow) return false;            // โหมดกันค้าง
+                until = decideWaitUntil;
+            }
+            if (until == DateTime.MinValue) return false;
+
+            double remain = (until - DateTime.Now).TotalSeconds;
+            if (remain <= 0) return false;                   // หมดเวลารอแล้ว -> ตัดสินด้วยกล้องเดียว
+
             int other = (p1 != "") ? 2 : 1;
-            int mine = (p1 != "") ? 1 : 2;
             string otherName = other == 1 ? "หน้า" : "หลัง";
 
-            bool otherSeeing;
-            lock (hybridLock) otherSeeing = plateSeen[other];
+            // ข้อความบอกสถานะเฉย ๆ ไม่มีผลต่อการตัดสินใจว่าจะรอหรือไม่
+            bool reading;
+            lock (turnLock) reading = isReading[other] || confirmCount[other] > 0;
+            bool seeing;
+            lock (hybridLock) seeing = plateSeen[other];
 
-            // อีกกล้องเพิ่งเห็นกรอบป้ายไปเมื่อไม่นานมานี้ไหม — ดูจาก "เวลา" แทนธง
-            // ชั่วขณะ ธงกระพริบได้ แต่เวลาที่เจอกรอบล่าสุดไม่กระพริบ
-            DateTime otherBoxAt;
-            lock (boxLock) otherBoxAt = latestBoxTime[other];
-            bool otherRecentlySawPlate = otherBoxAt != DateTime.MinValue &&
-                                         (DateTime.Now - otherBoxAt).TotalSeconds < otherCamIdleSec;
-
-            lock (turnLock)
-            {
-                if (plateSubmitted[other]) return false;     // อีกกล้องส่งมาแล้ว (ค่าหมดอายุไปเอง) ไม่ต้องรอ
-                if (plateSubmittedAt[mine] == DateTime.MinValue) return false;
-
-                double waited = (DateTime.Now - plateSubmittedAt[mine]).TotalSeconds;
-
-                // เพดานกันค้าง — แต่ห้ามตัดบทตอนอีกกล้อง "กำลังยิงอ่านอยู่จริง ๆ"
-                // ถ้าครบ 10 วิพอดีตอนที่มันยิง /predict ค้างอยู่ การตัดสินทิ้งตรงนั้น
-                // แปลว่าทิ้งคำตอบที่เหลืออีกไม่กี่ร้อยมิลลิวินาทีก็จะได้แล้ว
-                // จึงยืดให้อีกหน่อยถึง otherCamHardCapSec เฉพาะกรณีที่กำลังอ่านค้าง
-                if (waited >= otherCamHardCapSec) return false;
-                if (waited >= otherCamMaxWaitSec && !isReading[other]) return false;
-
-                // อีกกล้องกำลังทำงานอยู่จริงไหม
-                bool busy = isReading[other] || confirmCount[other] > 0 ||
-                            otherSeeing || otherRecentlySawPlate;
-                if (!busy)
-                {
-                    // ไม่เจอป้าย ไม่ได้อ่านอะไรอยู่ → ให้โอกาสอีก noPlateWaitSec วินาที
-                    // เผื่อมันกำลังจะจับกรอบติด พ้นเวลานี้แล้วค่อยตัดสินด้วยกล้องเดียว
-                    if (waited >= noPlateWaitSec) return false;
-                    waitReason = $"กล้อง{otherName}ยังตรวจไม่เจอป้าย — รออีกหน่อย ({waited:F0}/{noPlateWaitSec:F0} วิ)";
-                    return true;
-                }
-
-                waitReason = isReading[other] || confirmCount[other] > 0
-                    ? $"กล้อง{otherName}กำลังอ่านเลขอยู่ ({confirmCount[other]}/{neededReads[other]}) — รอให้เสร็จก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)"
-                    : $"กล้อง{otherName}เห็นป้ายแล้ว กำลังจะอ่าน — รอก่อน ({waited:F0}/{otherCamMaxWaitSec:F0} วิ)";
-                return true;
-            }
+            string doing = reading ? "กำลังอ่านเลขอยู่"
+                         : seeing  ? "เห็นป้ายแล้ว กำลังจะอ่าน"
+                                   : "ยังตรวจไม่เจอป้าย";
+            waitReason = $"กล้อง{otherName}{doing} — รออีก {remain:F0} วิ";
+            return true;
         }
+
+        /// <summary>เริ่มนับเวลารอใหม่ตั้งแต่ 1 (เรียกตอนแตะบัตร และตอนกล้องส่งเลขเข้ามา)
+        /// ต้องเรียกใต้ hybridLock</summary>
+        private void RestartDecideWait() => decideWaitUntil = DateTime.Now.AddSeconds(decideWaitSec);
 
         // ---- โหมดมีบัตร (ไฮบริด) ----
         private void DecideWithRfid(string tag, string p1, string p2)
@@ -1525,33 +1498,22 @@ namespace SmartGateLPR1
         /// ระบบค้างสนิท ไม้กั้นไม่ขยับ ต้องปิดโปรแกรมทิ้งอย่างเดียว
         ///
         /// ลำดับที่ต้องเป็นจริงเสมอ (จากมากไปน้อย):
-        ///   hybridWindowSec  &gt; decideDeadlineSec  &gt; เวลารอทุกตัว
-        ///   submitHoldMaxSec &gt; otherCamHardCapSec &gt; otherCamMaxWaitSec</summary>
+        ///   hybridWindowSec  &gt; noPlateGraceSec + decideWaitSec
+        ///   submitHoldMaxSec &gt; decideWaitSec</summary>
         private void CheckTimingInvariants()
         {
-            double longestWait = Math.Max(otherCamHardCapSec,
-                                 Math.Max(noPlateGraceSec,
-                                 Math.Max(plateUnconfirmedWaitSec,
-                                 Math.Max(noPlateDenySec, noPlateWaitSec))));
+            // เวลารอที่ยาวที่สุดที่เป็นไปได้: รอแบบ "ไม่มีป้ายเลย" จนเกือบครบ แล้ว
+            // กล้องเพิ่งส่งเลขเข้ามาพอดี จึงเริ่มนับ decideWaitSec ใหม่อีกรอบ
+            double longestWait = Math.Max(noPlateGraceSec, plateUnconfirmedWaitSec) + decideWaitSec;
 
-            if (noPlateWaitSec > otherCamMaxWaitSec)
+            if (submitHoldMaxSec <= decideWaitSec)
             {
-                noPlateWaitSec = otherCamMaxWaitSec;
-                WarnTiming($"noPlateWaitSec ต้องไม่เกิน otherCamMaxWaitSec \u2192 ปรับเป็น {noPlateWaitSec}");
-            }
-            if (otherCamHardCapSec <= otherCamMaxWaitSec)
-            {
-                otherCamHardCapSec = otherCamMaxWaitSec + 3;
-                WarnTiming($"otherCamHardCapSec ต้องมากกว่า otherCamMaxWaitSec \u2192 ปรับเป็น {otherCamHardCapSec}");
-            }
-            if (submitHoldMaxSec <= otherCamHardCapSec)
-            {
-                submitHoldMaxSec = otherCamHardCapSec + 2;
-                WarnTiming($"submitHoldMaxSec ต้องมากกว่า otherCamHardCapSec \u2192 ปรับเป็น {submitHoldMaxSec}");
+                submitHoldMaxSec = decideWaitSec + 5;
+                WarnTiming($"submitHoldMaxSec ต้องมากกว่า decideWaitSec \u2192 ปรับเป็น {submitHoldMaxSec}");
             }
             if (decideDeadlineSec <= longestWait)
             {
-                decideDeadlineSec = (int)Math.Ceiling(longestWait) + 2;
+                decideDeadlineSec = (int)Math.Ceiling(longestWait) + 3;
                 WarnTiming($"decideDeadlineSec ต้องมากกว่าเวลารอทุกตัว \u2192 ปรับเป็น {decideDeadlineSec}");
             }
             if (hybridWindowSec <= decideDeadlineSec)
@@ -1818,8 +1780,12 @@ namespace SmartGateLPR1
                 // ต้องการ "ไม่มีบัตร" — พอสถานะเป็น "มีบัตร + มีป้ายฝั่งเดียว + ยัง
                 // ไม่ mismatch" จึงไม่เข้าเคสไหนเลย ได้แต่ตกไปเรียก TryDecide ซึ่ง
                 // ถ้ามันติดเงื่อนไขอะไรอยู่ก็วนแบบนั้นไปตลอดกาล ไม้กั้นไม่ขยับ
+                // ใช้เส้นตายเดียวกับการรอ (decideWaitUntil) บวกเวลาผ่อนผันไว้ให้เส้นทาง
+                // ปกติได้ตัดสินก่อน ถ้าเลยไปแล้วยังไม่มีอะไรเกิดขึ้นแปลว่าติดอะไรสักอย่าง
                 else if (haveRfid && havePlate &&
-                         (DateTime.Now - pendingRfidTime).TotalSeconds >= decideDeadlineSec)
+                         (decideWaitUntil == DateTime.MinValue
+                            ? (DateTime.Now - pendingRfidTime).TotalSeconds >= decideDeadlineSec
+                            : DateTime.Now >= decideWaitUntil.AddSeconds(decideBackstopGraceSec)))
                 {
                     forceDecideNow = true;
                     forceDecide = true;
@@ -2185,6 +2151,9 @@ namespace SmartGateLPR1
                                     pendingPlateCam[camId] = plateText.Trim();
                                     pendingPlateConf[camId] = sendConf;
                                     pendingPlateCamTime[camId] = DateTime.Now;
+                                    // มีกล้องส่งเลขเข้ามาแล้ว -> เริ่มนับเวลารอ 1 ใหม่
+                                    // ให้โอกาสอีกกล้องเต็ม decideWaitSec วินาทีนับจากตรงนี้
+                                    RestartDecideWait();
                                 }
                             }
 
