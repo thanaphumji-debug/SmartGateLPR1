@@ -11,25 +11,22 @@
 
     ImportError: generic_type: type "_gpuDeviceProperties" is already registered!
 
-ตอนแรกเข้าใจว่าเกิดจาก torch กับ paddle ผูก struct ของ CUDA เข้ากับ pybind11
-ด้วยชื่อชนิดข้อมูลเดียวกันแล้วชนกันในโปรเซสเดียว จึงแยกไฟล์นี้ออกมาเป็น
-คนละโปรเซสตั้งแต่แรก — แต่ภายหลังพิสูจน์แล้วว่าเข้าใจผิด: รันไฟล์นี้เดี่ยว ๆ
-(ไม่มี torch อยู่ในโปรเซสเลย) ก็ยัง error เดิมเป๊ะ ๆ
+เพราะ torch กับ paddle ต่างก็ผูก struct ของ CUDA เข้ากับ Python ผ่าน pybind11
+ด้วย "ชื่อชนิดข้อมูล" เดียวกัน และ pybind11 มีทะเบียนชนิดข้อมูลชุดเดียวต่อ
+หนึ่งโปรเซส ใครโหลดทีหลังจึงลงทะเบียนซ้ำไม่ได้
 
-สาเหตุจริงคือ "ติดตั้ง paddle แบบเสีย/ซ้อนกัน" (มักเกิดตอนสลับไปมาระหว่าง
-paddlepaddle รุ่น CPU กับ paddlepaddle-gpu โดยไม่ถอนตัวเก่าออกก่อน) — ดู
-ข้อความแนะนำวิธีแก้ที่พิมพ์ตอน import พังด้านล่าง
-
-ถึงจะไม่ใช่สาเหตุของบั๊กตัวนี้ แต่การแยกโปรเซสยังจำเป็นอยู่ดี เพราะ torch
-กับ paddle รุ่น GPU ยังมีความเสี่ยงชนกันเรื่องทรัพยากร CUDA/สัญลักษณ์ซ้ำใน
-สถานการณ์อื่นที่ยังไม่เจอ และทำให้ทั้งคู่ใช้การ์ดจอพร้อมกันได้แยกกันชัดเจน:
+จึงต้องแยกเป็นสองโปรเซส ต่างคนต่างมีทะเบียนของตัวเอง และใช้การ์ดจอได้ทั้งคู่:
 
     lpr_api.py  (พอร์ต 5000)  = YOLO + torch   → คุยกับโปรแกรม C#
     ocr_api.py  (พอร์ต 5001)  = PaddleOCR      → รับภาพป้ายที่ crop มาแล้ว
 
+⚠️ แค่แยกไฟล์ยังไม่พอ! เพราะ paddleocr ลาก torch เข้ามาในโปรเซสนี้เองเงียบ ๆ
+ผ่าน paddlex → modelscope → torch  จึงต้องบล็อก modelscope ไว้ด้วย
+(ดูรายละเอียดเต็มที่บล็อก "กัน torch ไม่ให้ถูกลากเข้ามา" ด้านล่าง)
+
 ฝั่ง C# ไม่ต้องแก้อะไรเลย ยังยิงไปที่พอร์ต 5000 เหมือนเดิม
 โดยปกติ lpr_api.py จะเปิดไฟล์นี้ให้เองอัตโนมัติ (ดู ensure_ocr_service ในนั้น)
-แต่เปิดเองแยกก็ได้:  python ocr_api.py
+แต่เปิดเองแยกหน้าต่างก็ได้:  python ocr_api.py
 """
 
 import os
@@ -128,44 +125,81 @@ print("=" * 55)
 print(f"🔤 บริการอ่านตัวอักษร (PaddleOCR) — พอร์ต {OCR_PORT}")
 print("=" * 55)
 
-# ⚠️ ตรงนี้เคยเข้าใจผิดว่า error "generic_type: _gpuDeviceProperties is
-# already registered" เกิดจาก torch กับ paddle ชนกัน (จึงแยกไฟล์นี้ออกมา
-# เป็นคนละโปรเซส) — แต่พิสูจน์แล้วว่า "ผิด": โปรเซสนี้ไม่มี torch อยู่เลย
-# และยัง crash ด้วย error เดิมเป๊ะ ๆ ตอน import paddle ตัวเดียวโดด ๆ
+# ============================================================
+# ⛔ กัน torch ไม่ให้ถูกลากเข้ามาในโปรเซสนี้ — ต้องทำ "ก่อน" import paddleocr
+# ============================================================
 #
-# สาเหตุจริงคือ "การติดตั้ง paddle ที่เสีย/ซ้อนกัน" — พบบ่อยตอนสลับไปมา
-# ระหว่าง paddlepaddle (CPU) กับ paddlepaddle-gpu โดยไม่ถอนตัวเก่าออกให้
-# หมดก่อน ทำให้มีไฟล์ .pyd ของ core คนละรุ่นค้างอยู่ในโฟลเดอร์เดียวกัน
-# แล้วทั้งคู่พยายามลงทะเบียนชนิดข้อมูล pybind11 ชื่อเดียวกันซ้ำ
+# นี่คือต้นตอจริงของ error ที่ตามแก้กันมานาน:
+#     ImportError: generic_type: type "_gpuDeviceProperties" is already registered!
 #
-# จับ error นี้ตรงนี้เพื่อพิมพ์วิธีแก้ให้ชัดเจน แทนที่จะโยน traceback ยาว ๆ
+# เคยเข้าใจว่าเกิดจาก YOLO (torch) กับ PaddleOCR (paddle) อยู่โปรเซสเดียวกัน
+# จึงแยกไฟล์นี้ออกมา แต่แยกแล้วก็ยังพังเหมือนเดิม เพราะ paddleocr ลาก torch
+# เข้ามาเองเงียบ ๆ ผ่านลูกโซ่นี้ (ไล่ด้วย import hook จนเจอ):
+#
+#     paddleocr/__init__.py
+#       └─ paddlex/inference/utils/official_models.py:33  →  import modelscope
+#            └─ modelscope/utils/torch_utils.py:14        →  import torch
+#
+# modelscope เป็นแค่ "แหล่งดาวน์โหลดโมเดลสำรอง" (ค่าเริ่มต้นของ paddlex ใช้
+# huggingface อยู่แล้ว) แต่ดัน import torch ตั้งแต่ตอน import ไม่ใช่ตอนใช้งาน
+# พอ torch โหลดก่อน มันจองชื่อชนิดข้อมูล CUDA ของ pybind11 ไว้ พอ paddle
+# โหลดทีหลังจึงลงทะเบียนชื่อเดิมซ้ำไม่ได้ = crash
+#
+# แก้โดยยัดโมดูล modelscope ปลอมเข้า sys.modules ก่อน paddlex จะ import จริง
+# ทดสอบแล้ว: torch ไม่ถูกโหลดเลย และ PaddleOCR ยังสร้าง/ใช้งานได้ตามปกติ
+# (modelscope ถูกเรียกใช้จริงแค่ใน _ModelScopeModelHoster._download() เท่านั้น
+#  ซึ่งจะโดนก็ต่อเมื่อเลือกแหล่งดาวน์โหลดเป็น modelscope — ปกติไม่โดน)
+#
+# ปิดกลไกนี้ได้ด้วย LPR_ALLOW_MODELSCOPE=1 ถ้าจำเป็นต้องโหลดโมเดลผ่าน modelscope
+if os.environ.get("LPR_ALLOW_MODELSCOPE", "0") != "1" and "modelscope" not in sys.modules:
+    import types as _types
+
+    _stub = _types.ModuleType("modelscope")
+    _stub.__doc__ = "โมดูลปลอมของ SmartGateLPR — กัน modelscope ลาก torch เข้ามา"
+
+    def _modelscope_disabled(*args, **kwargs):
+        raise RuntimeError(
+            "modelscope ถูกปิดไว้ในบริการนี้ (กัน torch ถูกลากเข้ามาแล้วชนกับ paddle) "
+            "ถ้าจำเป็นต้องดาวน์โหลดโมเดลผ่าน modelscope จริง ๆ ให้ตั้ง "
+            "LPR_ALLOW_MODELSCOPE=1 แล้วรันใหม่"
+        )
+
+    _stub.snapshot_download = _modelscope_disabled
+    sys.modules["modelscope"] = _stub
+    print("🛡️  ปิด modelscope ไว้ (กัน torch ถูกลากเข้ามาชนกับ paddle)")
+
+# import paddle ก่อน paddleocr อีกชั้นหนึ่ง — ให้ไลบรารีที่โปรเซสนี้ต้องใช้จริง
+# ได้ลงทะเบียนชนิดข้อมูลของตัวเองก่อนใครเสมอ
 try:
-    from paddleocr import PaddleOCR
     import paddle
+    from paddleocr import PaddleOCR
 except ImportError as e:
     if "already registered" in str(e) or "gpuDeviceProperties" in str(e):
+        loaded_torch = "torch" in sys.modules
         _msg = r"""
-❌ นำเข้า paddle ไม่ได้ — การติดตั้งเสีย/ซ้อนกัน (ไม่เกี่ยวกับ torch)
-   สาเหตุที่พบบ่อยที่สุด: เคยลง paddlepaddle (CPU) แล้วมาลง
-   paddlepaddle-gpu ทับ (หรือสลับกลับไปมา) โดยไม่ถอนตัวเก่าออกก่อน
-   ทำให้มีไฟล์ core คนละรุ่นค้างซ้อนกันอยู่
+❌ นำเข้า paddle ไม่ได้ — ชนิดข้อมูล CUDA ของ pybind11 ถูกลงทะเบียนซ้ำ
 
-   วิธีแก้ (รันทีละบรรทัดใน cmd):
-   1) pip uninstall paddlepaddle paddlepaddle-gpu -y
-      (รันซ้ำอีกครั้งจนขึ้นว่า "not found" ทั้งคู่)
-   2) เช็คว่าโฟลเดอร์นี้หายไปจริง ถ้ายังอยู่ให้ลบเองด้วยมือ:
-      %LOCALAPPDATA%\Programs\Python\Python311\Lib\site-packages\paddle
-      (ลบโฟลเดอร์ paddle*.dist-info ที่อยู่ข้าง ๆ ด้วย)
-   3) ลงใหม่ให้เหลือรุ่นเดียว:
-      - อยากได้ความเร็วสุด (GPU): ไปเลือกคำสั่งติดตั้งที่ตรงกับ
-        CUDA ของเครื่อง (เช็คด้วย nvidia-smi) จาก
-        https://www.paddlepaddle.org.cn/en/install/quick
-      - อยากให้ใช้งานได้ก่อนแน่ ๆ (CPU): pip install paddlepaddle
-   4) ทดสอบแยกก่อนรันทั้งระบบ:
-      python -c "import paddle; print(paddle.__version__)"
+   แปลว่ามีไลบรารีอื่นที่ผูก CUDA เข้ากับ Python (เกือบทุกครั้งคือ torch)
+   ถูกโหลดเข้ามาในโปรเซสนี้ก่อน paddle
 """
         print("=" * 55)
         print(_msg)
+        if loaded_torch:
+            print("   ⚠️ ตรวจพบว่า torch ถูกโหลดเข้ามาแล้วจริง ๆ ในโปรเซสนี้")
+            print("      หาต้นตอได้ด้วย:  python -X importtime ocr_api.py")
+            print("      แล้วดูว่าใครเป็นคน import torch")
+            print("      (ที่เคยเจอคือ paddleocr -> paddlex -> modelscope -> torch")
+            print("       ซึ่งโค้ดด้านบนกันไว้แล้ว ถ้ายังเจออีกแปลว่ามีเส้นทางใหม่)")
+        else:
+            print("   ℹ️ torch ยังไม่ถูกโหลดในโปรเซสนี้ → น่าจะเป็นการติดตั้ง paddle")
+            print("      ที่เสีย/ซ้อนกัน (เคยลง CPU แล้วลง GPU ทับโดยไม่ถอนก่อน)")
+            print("      วิธีแก้:")
+            print("      1) pip uninstall paddlepaddle paddlepaddle-gpu -y  (รันซ้ำจนว่าง)")
+            print("      2) ลบโฟลเดอร์ที่ค้างด้วยมือ ถ้ายังอยู่:")
+            print("         %LOCALAPPDATA%\Programs\Python\Python311\Lib\site-packages\paddle")
+            print("         (รวมถึง paddle*.dist-info, paddleocr, paddlex ที่อยู่ระดับเดียวกัน)")
+            print("      3) ลงใหม่ให้เหลือรุ่นเดียว แล้วทดสอบด้วย:")
+            print("         python -c \"import paddle; print(paddle.__version__)\"")
         print("=" * 55)
     raise SystemExit(1)
 try:

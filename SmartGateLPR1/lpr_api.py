@@ -123,6 +123,11 @@ OCR_PORT = int(os.environ.get("LPR_OCR_PORT", "5001"))
 OCR_URL = f"http://127.0.0.1:{OCR_PORT}"
 # เปิด ocr_api.py ให้เองอัตโนมัติไหม (ตั้ง 0 ถ้าอยากเปิดเองแยกหน้าต่าง)
 OCR_AUTOSTART = os.environ.get("LPR_OCR_AUTOSTART", "1") == "1"
+# เปิดบริการ OCR ใน "หน้าต่าง cmd ของตัวเอง" แยกจากหน้าต่างนี้ (เฉพาะ Windows)
+#
+# ข้อดี: log ของสองบริการไม่ปนกัน ไล่ปัญหาง่ายกว่ามาก เห็นชัดว่าฝั่งไหนพัง
+# ปิดได้ด้วย LPR_OCR_NEW_WINDOW=0 ถ้าอยากให้ log มารวมหน้าต่างเดียว
+OCR_NEW_WINDOW = os.environ.get("LPR_OCR_NEW_WINDOW", "1") == "1"
 # รอบริการ OCR พร้อมนานสุดกี่วินาทีตอนเริ่มโปรแกรม (โหลดโมเดลครั้งแรกใช้เวลา)
 OCR_STARTUP_TIMEOUT = float(os.environ.get("LPR_OCR_STARTUP_TIMEOUT", "180"))
 # รอผลอ่านตัวอักษรนานสุดกี่วินาทีต่อหนึ่งภาพ (ฝั่ง C# ตั้ง timeout ไว้ 15 วิ)
@@ -190,7 +195,7 @@ def ensure_ocr_service():
 
     if not OCR_AUTOSTART:
         print(f"⚠️  ยังไม่มีบริการอ่านตัวอักษรที่ {OCR_URL} และปิด autostart ไว้")
-        print("   เปิดเองด้วย:  python ocr_api.py")
+        print("   เปิดเองอีกหน้าต่างด้วย:  python ocr_api.py")
         return False
 
     # ตอนรันเป็น .exe (PyInstaller) จะมี ocr_api.exe วางไว้ข้าง ๆ กัน
@@ -202,9 +207,15 @@ def ensure_ocr_service():
     else:
         cmd = [sys.executable, os.path.join(BASE_DIR, "ocr_api.py")]
 
-    print(f"🚀 กำลังเปิดบริการอ่านตัวอักษร (พอร์ต {OCR_PORT})...")
+    # บน Windows เปิดให้เป็นหน้าต่าง cmd ของตัวเอง log จะได้ไม่ปนกับหน้าต่างนี้
+    kwargs = {"cwd": BASE_DIR}
+    if OCR_NEW_WINDOW and os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+
+    where = "หน้าต่างใหม่" if kwargs.get("creationflags") else "หน้าต่างนี้"
+    print(f"🚀 กำลังเปิดบริการอ่านตัวอักษร (พอร์ต {OCR_PORT}) ใน{where}...")
     try:
-        _ocr_process = subprocess.Popen(cmd, cwd=BASE_DIR)
+        _ocr_process = subprocess.Popen(cmd, **kwargs)
     except Exception as e:
         print(f"❌ เปิดบริการอ่านตัวอักษรไม่สำเร็จ: {e}")
         return False
@@ -217,6 +228,10 @@ def ensure_ocr_service():
             return True
         if _ocr_process.poll() is not None:
             print(f"❌ บริการอ่านตัวอักษรปิดตัวเอง (exit code {_ocr_process.returncode})")
+            if OCR_NEW_WINDOW and os.name == "nt":
+                # หน้าต่างลูกปิดไปพร้อม error แล้ว ต้องบอกวิธีดูข้อความ
+                print("   หน้าต่างของมันปิดไปพร้อม error — ดูข้อความเต็มด้วยการรันเองตรง ๆ:")
+                print("      python ocr_api.py")
             return False
         time.sleep(1.0)
 
