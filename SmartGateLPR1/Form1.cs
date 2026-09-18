@@ -206,7 +206,7 @@ namespace SmartGateLPR1
 
         // ===== เวลาทุกเงื่อนไข (ปรับให้กระชับ รถจะได้ไม่ต้องจอดรอนาน) =====
         private int hybridWindowSec = 10;              // สองฝั่งต้องมาห่างกันไม่เกินกี่วินาที
-        private int noPlateGraceSec = 7;     // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน
+        private int noPlateGraceSec = 15;    // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน (ขยายจาก 7 → 15 วิ ตามที่ผู้ใช้สั่ง)
         private int noPlateDenySec = 9;      // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปฏิเสธ (สวิตช์ 2 ปิด)
         private bool requireRfid = true;
         private bool allowNoPlate = true;
