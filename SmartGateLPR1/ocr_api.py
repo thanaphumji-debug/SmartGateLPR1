@@ -166,13 +166,24 @@ if os.environ.get("LPR_ALLOW_MODELSCOPE", "0") != "1" and "modelscope" not in sy
 
     _stub.snapshot_download = _modelscope_disabled
     sys.modules["modelscope"] = _stub
-    print("🛡️  ปิด modelscope ไว้ (กัน torch ถูกลากเข้ามาชนกับ paddle)")
+    print("🛡️  ปิด modelscope ไว้ (กัน torch ถูกลากเข้ามาชนกับ paddle)", flush=True)
 
 # import paddle ก่อน paddleocr อีกชั้นหนึ่ง — ให้ไลบรารีที่โปรเซสนี้ต้องใช้จริง
 # ได้ลงทะเบียนชนิดข้อมูลของตัวเองก่อนใครเสมอ
+#
+# ทั้งสองบรรทัดนี้ใช้เวลานาน (paddle ~5-15 วิ, paddleocr/paddlex อีก ~10-30 วิ
+# เพราะลากโมดูลเข้ามาเยอะมาก) จึงบอกสถานะทีละขั้น ไม่งั้นดูเหมือนโปรแกรมค้าง
+_t_import = time.time()
 try:
+    print("⏳ [1/2] กำลังโหลด paddle...", flush=True)
     import paddle
+    print(f"   ✔ paddle {getattr(paddle, '__version__', '?')} "
+          f"({time.time() - _t_import:.1f}s)", flush=True)
+
+    _t2 = time.time()
+    print("⏳ [2/2] กำลังโหลด paddleocr (ตัวใหญ่ ใช้เวลาสักครู่)...", flush=True)
     from paddleocr import PaddleOCR
+    print(f"   ✔ paddleocr ({time.time() - _t2:.1f}s)", flush=True)
 except ImportError as e:
     if "already registered" in str(e) or "gpuDeviceProperties" in str(e):
         loaded_torch = "torch" in sys.modules
@@ -212,13 +223,15 @@ PADDLE_DEVICE = os.environ.get("LPR_PADDLE_DEVICE") or \
     ("gpu:0" if PADDLE_HAS_GPU else "cpu")
 
 if PADDLE_DEVICE.startswith("gpu"):
-    print(f"🎯 PaddleOCR: รันบน GPU ({PADDLE_DEVICE})")
+    print(f"🎯 PaddleOCR: รันบน GPU ({PADDLE_DEVICE})", flush=True)
 else:
-    print("⚠️  PaddleOCR: รันบน CPU")
+    print("⚠️  PaddleOCR: รันบน CPU", flush=True)
     print("   💡 อยากให้เร็วขึ้น ลง paddlepaddle รุ่น GPU ให้ตรงกับ CUDA ของเครื่อง")
     print("      (ตอนนี้แยกโปรเซสกับ YOLO แล้ว จึงลงรุ่น GPU ได้โดยไม่ชนกับ torch)")
 
-print(f"⏳ กำลังโหลดโมเดล: อ่านตัวอักษร={PADDLE_REC_MODEL} | ตรวจจับข้อความ={PADDLE_DET_MODEL}")
+print(f"⏳ กำลังโหลดโมเดล: อ่านตัวอักษร={PADDLE_REC_MODEL} | ตรวจจับข้อความ={PADDLE_DET_MODEL}",
+      flush=True)
+print("   (ครั้งแรกต้องดาวน์โหลดโมเดลก่อน อาจใช้เวลาหลายนาที)", flush=True)
 
 _PADDLE_ENGINE_CFG = {
     "paddle_static": {
@@ -257,14 +270,14 @@ except (TypeError, ValueError) as e:
     ocr = PaddleOCR(**_ocr_kwargs)
 
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
-print("🔥 กำลัง warm-up โมเดล...")
+print("🔥 กำลัง warm-up โมเดล...", flush=True)
 try:
     with ocr_lock:
         ocr.predict(np.full((80, 240, 3), 255, dtype=np.uint8))
 except Exception as e:
     print(f"(warm-up เตือน: {e})")
 
-print(f"✅ พร้อมอ่านตัวอักษรแล้ว — รออยู่ที่พอร์ต {OCR_PORT}")
+print(f"✅ พร้อมอ่านตัวอักษรแล้ว — รออยู่ที่พอร์ต {OCR_PORT}", flush=True)
 
 
 def _extract_lines(result):
