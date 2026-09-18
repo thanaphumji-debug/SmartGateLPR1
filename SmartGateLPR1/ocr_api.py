@@ -11,14 +11,18 @@
 
     ImportError: generic_type: type "_gpuDeviceProperties" is already registered!
 
-สาเหตุ: ทั้ง torch และ paddle ต่างก็ผูก struct ของ CUDA (cudaDeviceProp)
-เข้ากับ Python ผ่าน pybind11 โดยใช้ "ชื่อชนิดข้อมูล" เดียวกัน และ pybind11
-เก็บทะเบียนชนิดข้อมูลไว้ที่เดียวต่อหนึ่งโปรเซส  ใครโหลดทีหลังจึงชนกับคนแรก
-ปัญหานี้แก้ที่โค้ดเราไม่ได้ เพราะอยู่ในไลบรารีทั้งสองตัว
+ตอนแรกเข้าใจว่าเกิดจาก torch กับ paddle ผูก struct ของ CUDA เข้ากับ pybind11
+ด้วยชื่อชนิดข้อมูลเดียวกันแล้วชนกันในโปรเซสเดียว จึงแยกไฟล์นี้ออกมาเป็น
+คนละโปรเซสตั้งแต่แรก — แต่ภายหลังพิสูจน์แล้วว่าเข้าใจผิด: รันไฟล์นี้เดี่ยว ๆ
+(ไม่มี torch อยู่ในโปรเซสเลย) ก็ยัง error เดิมเป๊ะ ๆ
 
-ทางแก้คือ "อย่าให้ torch กับ paddle อยู่โปรเซสเดียวกัน" — คนละโปรเซสคือคนละ
-address space ต่างคนต่างมีทะเบียน pybind11 ของตัวเอง จึงไม่ชนกัน
-และได้ผลพลอยได้คือทั้งคู่ใช้การ์ดจอได้พร้อมกัน
+สาเหตุจริงคือ "ติดตั้ง paddle แบบเสีย/ซ้อนกัน" (มักเกิดตอนสลับไปมาระหว่าง
+paddlepaddle รุ่น CPU กับ paddlepaddle-gpu โดยไม่ถอนตัวเก่าออกก่อน) — ดู
+ข้อความแนะนำวิธีแก้ที่พิมพ์ตอน import พังด้านล่าง
+
+ถึงจะไม่ใช่สาเหตุของบั๊กตัวนี้ แต่การแยกโปรเซสยังจำเป็นอยู่ดี เพราะ torch
+กับ paddle รุ่น GPU ยังมีความเสี่ยงชนกันเรื่องทรัพยากร CUDA/สัญลักษณ์ซ้ำใน
+สถานการณ์อื่นที่ยังไม่เจอ และทำให้ทั้งคู่ใช้การ์ดจอพร้อมกันได้แยกกันชัดเจน:
 
     lpr_api.py  (พอร์ต 5000)  = YOLO + torch   → คุยกับโปรแกรม C#
     ocr_api.py  (พอร์ต 5001)  = PaddleOCR      → รับภาพป้ายที่ crop มาแล้ว
@@ -124,14 +128,46 @@ print("=" * 55)
 print(f"🔤 บริการอ่านตัวอักษร (PaddleOCR) — พอร์ต {OCR_PORT}")
 print("=" * 55)
 
-from paddleocr import PaddleOCR
-import paddle
-
-# ---------- PaddleOCR จะรันบน GPU หรือ CPU ----------
+# ⚠️ ตรงนี้เคยเข้าใจผิดว่า error "generic_type: _gpuDeviceProperties is
+# already registered" เกิดจาก torch กับ paddle ชนกัน (จึงแยกไฟล์นี้ออกมา
+# เป็นคนละโปรเซส) — แต่พิสูจน์แล้วว่า "ผิด": โปรเซสนี้ไม่มี torch อยู่เลย
+# และยัง crash ด้วย error เดิมเป๊ะ ๆ ตอน import paddle ตัวเดียวโดด ๆ
 #
-# ⚠️ ห้ามใช้ torch.cuda.is_available() ตัดสินแทน — torch กับ paddle เป็นคนละ
-# ไลบรารี ติดตั้งแยกกัน มี/ไม่มี CUDA ไม่จำเป็นต้องตรงกัน  และในโปรเซสนี้
-# ไม่มี torch อยู่แล้ว (นั่นคือเหตุผลที่แยกไฟล์นี้ออกมา)
+# สาเหตุจริงคือ "การติดตั้ง paddle ที่เสีย/ซ้อนกัน" — พบบ่อยตอนสลับไปมา
+# ระหว่าง paddlepaddle (CPU) กับ paddlepaddle-gpu โดยไม่ถอนตัวเก่าออกให้
+# หมดก่อน ทำให้มีไฟล์ .pyd ของ core คนละรุ่นค้างอยู่ในโฟลเดอร์เดียวกัน
+# แล้วทั้งคู่พยายามลงทะเบียนชนิดข้อมูล pybind11 ชื่อเดียวกันซ้ำ
+#
+# จับ error นี้ตรงนี้เพื่อพิมพ์วิธีแก้ให้ชัดเจน แทนที่จะโยน traceback ยาว ๆ
+try:
+    from paddleocr import PaddleOCR
+    import paddle
+except ImportError as e:
+    if "already registered" in str(e) or "gpuDeviceProperties" in str(e):
+        _msg = r"""
+❌ นำเข้า paddle ไม่ได้ — การติดตั้งเสีย/ซ้อนกัน (ไม่เกี่ยวกับ torch)
+   สาเหตุที่พบบ่อยที่สุด: เคยลง paddlepaddle (CPU) แล้วมาลง
+   paddlepaddle-gpu ทับ (หรือสลับกลับไปมา) โดยไม่ถอนตัวเก่าออกก่อน
+   ทำให้มีไฟล์ core คนละรุ่นค้างซ้อนกันอยู่
+
+   วิธีแก้ (รันทีละบรรทัดใน cmd):
+   1) pip uninstall paddlepaddle paddlepaddle-gpu -y
+      (รันซ้ำอีกครั้งจนขึ้นว่า "not found" ทั้งคู่)
+   2) เช็คว่าโฟลเดอร์นี้หายไปจริง ถ้ายังอยู่ให้ลบเองด้วยมือ:
+      %LOCALAPPDATA%\Programs\Python\Python311\Lib\site-packages\paddle
+      (ลบโฟลเดอร์ paddle*.dist-info ที่อยู่ข้าง ๆ ด้วย)
+   3) ลงใหม่ให้เหลือรุ่นเดียว:
+      - อยากได้ความเร็วสุด (GPU): ไปเลือกคำสั่งติดตั้งที่ตรงกับ
+        CUDA ของเครื่อง (เช็คด้วย nvidia-smi) จาก
+        https://www.paddlepaddle.org.cn/en/install/quick
+      - อยากให้ใช้งานได้ก่อนแน่ ๆ (CPU): pip install paddlepaddle
+   4) ทดสอบแยกก่อนรันทั้งระบบ:
+      python -c "import paddle; print(paddle.__version__)"
+"""
+        print("=" * 55)
+        print(_msg)
+        print("=" * 55)
+    raise SystemExit(1)
 try:
     PADDLE_HAS_GPU = (paddle.device.is_compiled_with_cuda() and
                       paddle.device.cuda.device_count() > 0)
