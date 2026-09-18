@@ -324,6 +324,12 @@ namespace SmartGateLPR1
         private int retryMaxSec = 6;     // และต้องไม่เกินกี่วิ นับจากตอนแตะบัตร
         private int retryCount = 0;      // นับรอบที่อ่านซ้ำไปแล้วของบัตรใบปัจจุบัน
         private bool sawMismatch = false;
+        // เห็นกรอบป้ายอยู่ (หรือกระพริบ) แต่ OCR ไม่เคยยืนยันเลขได้เลยสักครั้ง —
+        // รอกี่วิก่อนตัดสิน (เคส A3 ใน TimerHybridTimeout_Tick) แยกจาก retryMaxSec
+        // เพราะ retryMaxSec ใช้กับจังหวะ "อ่านซ้ำตอนป้ายไม่ตรงบัตร" (เคส B) ด้วย
+        // ถ้าใช้ค่าเดียวกันจะไปกระทบจังหวะนั้นโดยไม่ได้ตั้งใจ — ตั้งเท่ากับ
+        // noPlateGraceSec (15 วิ) ตามที่ผู้ใช้สั่งให้รอนานเท่ากัน
+        private int plateUnconfirmedWaitSec = 15;
 
 
         private Process aiProcess = null;
@@ -1682,7 +1688,7 @@ namespace SmartGateLPR1
                 //   allowNoPlate เปิด  → ปฏิเสธไม่ได้ผลอะไร ก็ปล่อยผ่านด้วยแท็กอย่างเดียว
                 //   allowNoPlate ปิด   → ยังคงปฏิเสธเหมือนเดิม (เข้มงวด ต้องเห็นป้ายชัด)
                 else if (haveRfid && !havePlate && plateVisible && !sawMismatch &&
-                         (DateTime.Now - pendingRfidTime).TotalSeconds >= retryMaxSec)
+                         (DateTime.Now - pendingRfidTime).TotalSeconds >= plateUnconfirmedWaitSec)
                 {
                     if (allowNoPlate)
                     {
