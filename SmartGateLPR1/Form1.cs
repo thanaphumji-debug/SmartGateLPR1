@@ -205,7 +205,23 @@ namespace SmartGateLPR1
         private System.Windows.Forms.Timer timerHybridTimeout;
 
         // ===== เวลาทุกเงื่อนไข (ปรับให้กระชับ รถจะได้ไม่ต้องจอดรอนาน) =====
-        private int hybridWindowSec = 10;              // สองฝั่งต้องมาห่างกันไม่เกินกี่วินาที
+        // สองฝั่ง (บัตร / ป้าย) ต้องมาห่างกันไม่เกินกี่วินาที ถึงจะถือว่าเป็นคันเดียวกัน
+        //
+        // ⚠️ ค่านี้ต้องมากกว่า "เวลารอ" ทุกตัวเสมอ (otherCamHardCapSec, noPlateGraceSec,
+        // plateUnconfirmedWaitSec) ไม่งั้นจะค้างตายสนิท:
+        // ตอนตั้ง 10 วิ แล้วขยับเวลารอเป็น 15-18 วิ เคยเกิดอาการ "แตะบัตรแล้ว กล้อง
+        // ส่งเลขแล้ว แต่ไม่ตัดสินสักที" เพราะพอเลย 10 วิ TryDecide จะมองว่าบัตร
+        // หมดอายุ (rfidFresh = false) แล้ว return ทิ้งทุกครั้ง ส่วนตัวจับเวลาก็เข้า
+        // เคสไหนไม่ได้เลย (เคส A/A2/A3 ต้องไม่มีป้าย แต่ป้ายดิบยังค้างอยู่) สุดท้าย
+        // ไม่มีใครตัดสินให้เลยสักทาง
+        private int hybridWindowSec = 25;
+        // กันค้างขั้นสุดท้าย: แตะบัตรมาแล้วเกินกี่วินาที ถ้ายังไม่มีใครตัดสินให้
+        // ให้บังคับตัดสินด้วยข้อมูลเท่าที่มีทันที (ดู forceDecideNow)
+        // ต้องมากกว่าเวลารอทุกตัว แต่ต้องน้อยกว่า hybridWindowSec
+        private int decideDeadlineSec = 20;
+        // ธงบังคับตัดสิน — ตั้งโดยตัวจับเวลาเมื่อครบ decideDeadlineSec
+        // ทำให้ ShouldWaitForOtherCam เลิกรอทันที และ TryDecide ไม่กรองอายุข้อมูล
+        private bool forceDecideNow = false;
         private int noPlateGraceSec = 15;    // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปล่อยผ่าน (ขยายจาก 7 → 15 วิ ตามที่ผู้ใช้สั่ง)
         private int noPlateDenySec = 9;      // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปฏิเสธ (สวิตช์ 2 ปิด)
         private bool requireRfid = true;
@@ -377,6 +393,7 @@ namespace SmartGateLPR1
             LoadAccessPolicy();
             InitBarrierStatus();
             InitLprStatusLines();       // แถบสถานะ 3 บรรทัดของกล้องทั้งสองตัว
+            CheckTimingInvariants();    // กันตั้งค่าเวลาขัดกันจนระบบค้าง
             ReloadBarrier();           // สร้างตัวควบคุมไม้กั้น + อัปเดตป้ายสถานะ
             InitHistoryButton();
             if (!string.IsNullOrEmpty(DatabaseHelper.LastSchemaError))
@@ -1144,7 +1161,11 @@ namespace SmartGateLPR1
             timerGate.Stop();
             try { barrier?.Close(); } catch { }
             gateBusy = false;                              // พร้อมรับคันถัดไป
-            lock (hybridLock) { sawMismatch = false; retryCount = 0; plateSeenNoTagAt = DateTime.MinValue; }
+            lock (hybridLock)
+            {
+                sawMismatch = false; retryCount = 0; plateSeenNoTagAt = DateTime.MinValue;
+                forceDecideNow = false;      // จบรอบแล้ว เลิกโหมดกันค้าง
+            }
             // สำคัญ: ปลดล็อกป้ายที่ค้างไว้ของคันก่อนหน้า ไม่งั้นกล้องจะไม่อ่านป้ายให้คันถัดไปอีกเลย
             lastDecidedTag = logTag;
             lastDecidedAt = DateTime.Now;
@@ -1181,6 +1202,7 @@ namespace SmartGateLPR1
                 pendingRfidTag = tag;
                 pendingRfidTime = DateTime.Now;
                 plateSeenNoTagAt = DateTime.MinValue;
+                forceDecideNow = false;      // บัตรใบใหม่ เริ่มนับเวลากันค้างใหม่
                 retryCount = 0;              // บัตรใบใหม่ เริ่มนับรอบอ่านซ้ำใหม่
             }
             this.BeginInvoke(new Action(() =>
@@ -1228,17 +1250,19 @@ namespace SmartGateLPR1
         public void ReloadAccessPolicy() => LoadAccessPolicy();
 
         // ตัดสินเมื่อข้อมูลครบสองฝั่งภายในหน้าต่างเวลา
-        private void TryDecide()
+        /// <param name="force">true = โหมดกันค้าง ใช้ข้อมูลเท่าที่มีโดยไม่กรองอายุ
+        /// และไม่รออีกกล้องอีกแล้ว (เรียกจากตัวจับเวลาเมื่อครบ decideDeadlineSec)</param>
+        private void TryDecide(bool force = false)
         {
             string tag, p1, p2;
             lock (hybridLock)
             {
                 if (gateBusy) return;
                 bool rfidFresh = pendingRfidTag != "" &&
-                                 (DateTime.Now - pendingRfidTime).TotalSeconds <= hybridWindowSec;
+                                 (force || (DateTime.Now - pendingRfidTime).TotalSeconds <= hybridWindowSec);
 
-                p1 = (pendingPlateCam[1] != "" && (DateTime.Now - pendingPlateCamTime[1]).TotalSeconds <= hybridWindowSec) ? pendingPlateCam[1] : "";
-                p2 = (pendingPlateCam[2] != "" && (DateTime.Now - pendingPlateCamTime[2]).TotalSeconds <= hybridWindowSec) ? pendingPlateCam[2] : "";
+                p1 = (pendingPlateCam[1] != "" && (force || (DateTime.Now - pendingPlateCamTime[1]).TotalSeconds <= hybridWindowSec)) ? pendingPlateCam[1] : "";
+                p2 = (pendingPlateCam[2] != "" && (force || (DateTime.Now - pendingPlateCamTime[2]).TotalSeconds <= hybridWindowSec)) ? pendingPlateCam[2] : "";
                 bool havePlate = p1 != "" || p2 != "";
 
                 if (requireRfid && !rfidFresh) return;   // โหมดบังคับบัตร: ไม่มีบัตรไม่ตัดสิน
@@ -1274,8 +1298,12 @@ namespace SmartGateLPR1
         private bool ShouldWaitForOtherCam(string p1, string p2, out string waitReason)
         {
             waitReason = "";
-            if (p1 != "" && p2 != "") return false;          // ครบสองฝั่งแล้ว
+            // ครบสองฝั่งแล้ว = ได้เลขจากกล้องทั้งสองตัว → ตัดสินทันที ไม่ต้องรออะไรอีก
+            if (p1 != "" && p2 != "") return false;
             if (p1 == "" && p2 == "") return false;          // ยังไม่มีสักฝั่ง
+
+            // โหมดกันค้าง: ครบกำหนดแล้ว เลิกรอทุกกรณี
+            lock (hybridLock) { if (forceDecideNow) return false; }
             int other = (p1 != "") ? 2 : 1;
             int mine = (p1 != "") ? 1 : 2;
             string otherName = other == 1 ? "หน้า" : "หลัง";
@@ -1469,6 +1497,47 @@ namespace SmartGateLPR1
             lblBarrierStatus.BringToFront();
         }
 
+        /// <summary>ตรวจว่าค่าเวลาทุกตัวยังเรียงลำดับถูกต้อง ถ้าไม่ถูกให้ขยับตามอัตโนมัติ
+        ///
+        /// เคยพังมาแล้วจริง ๆ: ตอนขยับ "เวลารออีกกล้อง" จาก 10 เป็น 15-18 วิ แต่ลืม
+        /// ขยับ hybridWindowSec (10 วิ) ตาม ผลคือพอเลย 10 วิ ศูนย์ตัดสินใจมองว่า
+        /// บัตรหมดอายุแล้ว return ทิ้งทุกครั้ง ส่วนตัวจับเวลาก็เข้าเคสไหนไม่ได้เลย
+        /// ระบบค้างสนิท ไม้กั้นไม่ขยับ ต้องปิดโปรแกรมทิ้งอย่างเดียว
+        ///
+        /// ลำดับที่ต้องเป็นจริงเสมอ (จากมากไปน้อย):
+        ///   hybridWindowSec  &gt; decideDeadlineSec  &gt; เวลารอทุกตัว
+        ///   submitHoldMaxSec &gt; otherCamHardCapSec &gt; otherCamMaxWaitSec</summary>
+        private void CheckTimingInvariants()
+        {
+            double longestWait = Math.Max(otherCamHardCapSec,
+                                 Math.Max(noPlateGraceSec,
+                                 Math.Max(plateUnconfirmedWaitSec, noPlateDenySec)));
+
+            if (otherCamHardCapSec <= otherCamMaxWaitSec)
+            {
+                otherCamHardCapSec = otherCamMaxWaitSec + 3;
+                WarnTiming($"otherCamHardCapSec ต้องมากกว่า otherCamMaxWaitSec \u2192 ปรับเป็น {otherCamHardCapSec}");
+            }
+            if (submitHoldMaxSec <= otherCamHardCapSec)
+            {
+                submitHoldMaxSec = otherCamHardCapSec + 2;
+                WarnTiming($"submitHoldMaxSec ต้องมากกว่า otherCamHardCapSec \u2192 ปรับเป็น {submitHoldMaxSec}");
+            }
+            if (decideDeadlineSec <= longestWait)
+            {
+                decideDeadlineSec = (int)Math.Ceiling(longestWait) + 2;
+                WarnTiming($"decideDeadlineSec ต้องมากกว่าเวลารอทุกตัว \u2192 ปรับเป็น {decideDeadlineSec}");
+            }
+            if (hybridWindowSec <= decideDeadlineSec)
+            {
+                hybridWindowSec = decideDeadlineSec + 5;
+                WarnTiming($"hybridWindowSec ต้องมากกว่า decideDeadlineSec \u2192 ปรับเป็น {hybridWindowSec}");
+            }
+        }
+
+        private static void WarnTiming(string msg) =>
+            Console.WriteLine("\u26A0\uFE0F ค่าเวลาตั้งขัดกัน (แก้ให้อัตโนมัติแล้ว): " + msg);
+
         /// <summary>สร้างตัวควบคุมไม้กั้นใหม่ตามค่าที่ตั้งไว้ (เรียกหลังบันทึกหน้าตั้งค่า)</summary>
         public void ReloadBarrier()
         {
@@ -1650,6 +1719,7 @@ namespace SmartGateLPR1
             string tagMismatchDeny = null;
             bool plateNoTagDeny = false;
             bool noPlateDeny = false;
+            bool forceDecide = false;
             string noTagP1 = "", noTagP2 = "";   // ทะเบียนที่อ่านได้ตอนไม่มีแท็ก (ไว้บันทึกประวัติ)
 
             lock (hybridLock)
@@ -1714,6 +1784,20 @@ namespace SmartGateLPR1
                     pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0;
                     sawMismatch = false; retryCount = 0;
                 }
+                // เคสD (กันค้าง): มีบัตร + มีป้ายมาแล้วอย่างน้อยหนึ่งฝั่ง แต่ยังไม่มี
+                // ใครตัดสินให้สักที จนเลย decideDeadlineSec → บังคับตัดสินเดี๋ยวนี้
+                //
+                // เคสนี้เคยเป็นรูโหว่ที่ทำให้ระบบค้างสนิท: เคส A/A2/A3 ทุกตัวต้องการ
+                // "ไม่มีป้าย" (!havePlate) ส่วนเคส B ต้องการ sawMismatch และเคส C
+                // ต้องการ "ไม่มีบัตร" — พอสถานะเป็น "มีบัตร + มีป้ายฝั่งเดียว + ยัง
+                // ไม่ mismatch" จึงไม่เข้าเคสไหนเลย ได้แต่ตกไปเรียก TryDecide ซึ่ง
+                // ถ้ามันติดเงื่อนไขอะไรอยู่ก็วนแบบนั้นไปตลอดกาล ไม้กั้นไม่ขยับ
+                else if (haveRfid && havePlate &&
+                         (DateTime.Now - pendingRfidTime).TotalSeconds >= decideDeadlineSec)
+                {
+                    forceDecideNow = true;
+                    forceDecide = true;
+                }
                 // เคสC: มีป้าย ไม่มีบัตร
                 else if (havePlate && !haveRfid)
                 {
@@ -1749,6 +1833,8 @@ namespace SmartGateLPR1
             }
             else if (noPlateDeny)                                              // ⬅️ เพิ่ม
                 DenyAccess("⛔ ไม่พบป้ายทะเบียน ");
+            else if (forceDecide)
+                TryDecide(force: true);      // กันค้าง: ตัดสินด้วยข้อมูลเท่าที่มี
             else
             {
                 // กระตุ้นให้ตัดสินอีกครั้ง — จำเป็นเพราะตอนนี้กล้องส่งผลเข้ามาแค่ครั้งเดียว
