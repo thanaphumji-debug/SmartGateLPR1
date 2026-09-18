@@ -1015,6 +1015,14 @@ namespace SmartGateLPR1
                 if (rfidTelnet.Connect(ip, port) && rfidTelnet.Login(user, pass))
                 {
                     rfidTelnet.Send("set TimeOut = 0");
+                    // ต้องอ่านคำตอบของคำสั่งนี้ทิ้งก่อน ไม่งั้นข้อความตอบกลับ (เช่น
+                    // "TagListAntennaCombine = ...\r\nAlien>") จะค้างอยู่ในบัฟเฟอร์
+                    // ยังไม่ถูกอ่าน พอ ReadRfidLoop เริ่มรอบแรกส่ง "Get TagList" แล้ว
+                    // WaitFor(">") จะไปเจอ ">" ของคำตอบเก่าตัวนี้ก่อน ได้ข้อความที่
+                    // ปนกันมา ตัวกรองฐาน 16 (เก็บเฉพาะ 0-9a-fA-F) จึงอาจดึงตัวเลข/
+                    // ตัวอักษรจากข้อความตอบรับมาต่อกันเป็น "แท็กผี" ที่ไม่มีอยู่จริง
+                    // ยาวพอ (>= 8 ตัว) แล้วถูกส่งเข้า OnRfidScanned ทันทีตอนเชื่อมต่อสำเร็จ
+                    rfidTelnet.WaitFor(">");
                     Thread.Sleep(500);
                     isRfidRunning = true;
                     rfidThread = new Thread(ReadRfidLoop) { IsBackground = true };
