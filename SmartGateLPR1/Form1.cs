@@ -210,8 +210,6 @@ namespace SmartGateLPR1
         private int noPlateDenySec = 9;      // มีบัตรแต่ไม่เจอป้าย รอกี่วิ แล้วปฏิเสธ (สวิตช์ 2 ปิด)
         private bool requireRfid = true;
         private bool allowNoPlate = true;
-        private bool requirePlatesAgree = false;
-        private bool allowPlateTagMismatch = false;
         private DateTime plateSeenNoTagAt = DateTime.MinValue;  // เวลาที่เริ่มเห็นป้ายทั้งที่ยังไม่มีแท็ก (โหมด RFID)
         private int plateOnlyDenySec = 2;                       // เจอป้ายแต่ไม่มีแท็กกี่วิ → ปฏิเสธ
         private bool[] plateSeen = new bool[3];   // index 1,2 = กล้องหน้า/หลังเจอป้ายไหม
@@ -1220,8 +1218,6 @@ namespace SmartGateLPR1
             var st = SettingsStore.Load();
             requireRfid = st.RequireRfid;
             allowNoPlate = st.AllowNoPlate;
-            requirePlatesAgree = st.RequirePlatesAgree;
-            allowPlateTagMismatch = st.AllowPlateTagMismatch;
         }
         public void ReloadAccessPolicy() => LoadAccessPolicy();
 
@@ -1351,10 +1347,11 @@ namespace SmartGateLPR1
                 return;
             }
 
-            // สวิตช์ "ต้องตรงทั้ง 2 กล้อง" = บล็อกเฉพาะตอนอ่านได้ทั้งคู่แต่ขัดกัน
-            // (รถติดป้ายด้านเดียว อีกกล้องอ่านไม่เจอ → ไม่ถือว่าขัด ยังผ่านได้)
-            bool blockedByDisagree = requirePlatesAgree && platesDisagree;
-            bool plateOk = blockedByDisagree ? false : (m1 || m2);
+            // ป้ายฝั่งใดฝั่งหนึ่งตรงกับบัตร = ผ่าน
+            // (เคยมีสวิตช์ "บังคับให้ป้ายหน้า-หลังต้องเลขตรงกัน" คร่อมเงื่อนไขนี้อยู่
+            //  ถอดออกแล้วเมื่อ 2569-09-18 ตามที่ผู้ใช้สั่ง — ในทางปฏิบัติมันปิดอยู่เสมอ
+            //  เพราะ OCR อ่านพลาดฝั่งเดียวก็ทำให้รถที่ถูกต้องผ่านไม่ได้)
+            bool plateOk = m1 || m2;
 
             if (plateOk)
             {
@@ -1372,18 +1369,9 @@ namespace SmartGateLPR1
                 return;
             }
 
-            // สวิตช์: อ่านป้ายได้แต่ไม่ตรง + อนุญาตให้ผ่านด้วยบัตร (แต่ถ้าหน้า-หลังขัดกันและเปิด requirePlatesAgree ห้ามใช้ทางลัดนี้)
-            if (havePlate && allowPlateTagMismatch && !blockedByDisagree)
-            {
-                lock (hybridLock)
-                {
-                    gateBusy = true; sawMismatch = false; retryCount = 0;
-                    pendingRfidTag = ""; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0;
-                }
-                GrantAccess(owner, dbPlateShow, dbPerm,
-                            $"⚠️ {DescribePlates(p1, p2)} แต่ไม่ตรงกับบัตร — อนุญาตด้วย RFID ตามนโยบาย");
-                return;
-            }
+            // (เคยมีสวิตช์ "อนุญาตรถที่ป้ายทะเบียนไม่ตรงกับแท็ก RFID" เป็นทางลัดให้ผ่าน
+            //  ด้วยบัตรอย่างเดียวตรงนี้ ถอดออกแล้วเมื่อ 2569-09-18 ตามที่ผู้ใช้สั่ง
+            //  ป้ายต้องตรงกับบัตรเสมอ ไม่มีทางลัด)
 
             if (!havePlate) return;   // ยังไม่มีป้าย → รอ (timer จัดการเคสไม่มีป้าย) อย่าตั้ง sawMismatch
 
@@ -1403,16 +1391,12 @@ namespace SmartGateLPR1
             }
             if (keepTrying) ResetLprTurn();   // เคลียร์ล็อกป้ายเก่า ให้กล้องอ่านใหม่ได้จริงในรอบ retry
 
-            string detail = blockedByDisagree
-                ? $"{DescribePlates(p1, p2)} — กำลังอ่านซ้ำ..."
-                : $"{DescribePlates(p1, p2)} แต่ไม่ตรงกับบัตร ({dbPlate}) — กำลังอ่านซ้ำ...";
+            string detail = $"{DescribePlates(p1, p2)} แต่ไม่ตรงกับบัตร ({dbPlate}) — กำลังอ่านซ้ำ...";
             if (keepTrying)
                 SetAccessUi($"🔄 กำลังตรวจสอบใหม่ (รอบ {retryCount}/{retryMaxRounds})...",
                             Color.DarkOrange, Color.Red, dbPlate, "-", detail);
             else
-                DenyAccess(blockedByDisagree
-                    ? $"⛔ {DescribePlates(p1, p2)} (ตรวจสอบซ้ำแล้ว)"
-                    : $"⛔ {DescribePlates(p1, p2)} ไม่ตรงกับบัตร {dbPlate} (ตรวจสอบซ้ำแล้ว)");
+                DenyAccess($"⛔ {DescribePlates(p1, p2)} ไม่ตรงกับบัตร {dbPlate} (ตรวจสอบซ้ำแล้ว)");
         }
 
         // ---- โหมด LPR อย่างเดียว (ไม่มีบัตร): ป้ายตรงฐานข้อมูล = ผ่าน ----
@@ -1428,14 +1412,7 @@ namespace SmartGateLPR1
 
             logMode = "LPR"; logTag = ""; logPlate1 = p1; logPlate2 = p2;
             logPlateDb = ""; logProvince = ""; logOwner = ""; logPermission = "";
-            // สวิตช์ 4: อ่านได้ทั้ง 2 กล้องแต่เลขคนละอัน → ปฏิเสธ (กันปลอมป้าย) ในโหมด LPR ล้วนด้วย
             bool bothRead = p1 != "" && p2 != "";
-            if (requirePlatesAgree && bothRead && NormPlate(p1) != NormPlate(p2))
-            {
-                lock (hybridLock) { gateBusy = true; pendingPlateCam[1] = ""; pendingPlateCam[2] = ""; pendingPlateConf[1] = pendingPlateConf[2] = 0; }
-                DenyAccess($"⛔ {DescribePlates(p1, p2)}");
-                return;
-            }
 
             // หน้า-หลังไม่ตรงกันแต่นโยบายไม่ได้บังคับ → ลองฝั่งที่ OCR มั่นใจกว่าก่อน
             double c1, c2;

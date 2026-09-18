@@ -28,8 +28,6 @@ namespace SmartGateLPR1
         // --- เงื่อนไขการอนุญาตเข้า-ออก ---
         public bool RequireRfid { get; set; } = true;
         public bool AllowNoPlate { get; set; } = true;
-        public bool RequirePlatesAgree { get; set; } = false;
-        public bool AllowPlateTagMismatch { get; set; } = false;
         public bool AcceptedEula { get; set; } = false;
         // --- การควบคุมไม้กั้น ---
         public string BarrierMode { get; set; } = "simulate";   // simulate / serial / http
