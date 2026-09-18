@@ -1673,12 +1673,25 @@ namespace SmartGateLPR1
                     gateBusy = true;
                     pendingRfidTag = "";
                 }
-                // เคสA3: มีบัตร + เห็นป้ายอยู่แต่อ่านไม่สำเร็จสักที จนครบเวลา → ปฏิเสธ
-                // (กันช่องโหว่: ป้ายผิดคันที่อ่านไม่นิ่ง จะหลุดไปเข้าเคส A แล้วได้ผ่านฟรี)
+                // เคสA3: มีบัตร + เห็นป้ายอยู่ (หรือกระพริบ) แต่อ่านไม่สำเร็จสักที จนครบเวลา
+                //
+                // เดิมเคสนี้ "ปฏิเสธเสมอ" ไม่สนสวิตช์ allowNoPlate เลย ทำให้รถที่มี
+                // แท็กถูกต้องแต่ป้ายอ่านไม่ออก (สกปรก/มุมเอียง/แสงไม่พอ) โดนบล็อกทั้งที่
+                // ผู้ดูแลเปิดสวิตช์ "อนุญาตรถไม่ติดป้าย" ไว้แล้ว — บั๊กนี้ทำให้ดูเหมือน
+                // ระบบไม่อนุญาตทั้งที่ควรอนุญาต ตอนนี้ให้ยึดตามสวิตช์เดียวกับเคส A/A2:
+                //   allowNoPlate เปิด  → ปฏิเสธไม่ได้ผลอะไร ก็ปล่อยผ่านด้วยแท็กอย่างเดียว
+                //   allowNoPlate ปิด   → ยังคงปฏิเสธเหมือนเดิม (เข้มงวด ต้องเห็นป้ายชัด)
                 else if (haveRfid && !havePlate && plateVisible && !sawMismatch &&
                          (DateTime.Now - pendingRfidTime).TotalSeconds >= retryMaxSec)
                 {
-                    noPlateDeny = true;
+                    if (allowNoPlate)
+                    {
+                        tagOnlyGrant = pendingRfidTag;
+                    }
+                    else
+                    {
+                        noPlateDeny = true;
+                    }
                     gateBusy = true;
                     pendingRfidTag = "";
                 }
