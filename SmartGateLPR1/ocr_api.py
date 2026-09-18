@@ -213,21 +213,36 @@ except ImportError as e:
             print("         python -c \"import paddle; print(paddle.__version__)\"")
         print("=" * 55)
     raise SystemExit(1)
-try:
-    PADDLE_HAS_GPU = (paddle.device.is_compiled_with_cuda() and
-                      paddle.device.cuda.device_count() > 0)
-except Exception:
-    PADDLE_HAS_GPU = False
+# ---------- เลือกอุปกรณ์รัน PaddleOCR ----------
+#
+# ⛔ ค่าเริ่มต้นบังคับเป็น CPU เสมอ ไม่ auto-detect GPU ให้แล้ว
+#
+# เหตุผล: ทดสอบกับ paddlepaddle-gpu จริงบนเครื่องที่ใช้งานแล้วเจอปัญหาต่อเนื่อง
+# หลายอย่าง (ติดตั้งพัง, ชนกับ torch ผ่าน modelscope, ตรวจจับป้ายได้แต่อ่าน
+# ตัวอักษรไม่ออกเลย) ซึ่งไล่ทีละปัญหาแล้วเปลืองเวลามาก ในเมื่อ CPU ก็ใช้งาน
+# ได้จริงอยู่แล้ว (แค่ช้ากว่า) จึงตั้งเป็นค่าปลอดภัยไว้ก่อน ให้ระบบทำงานได้
+# แน่นอนกว่าไล่บั๊กของ GPU build ต่อไปเรื่อย ๆ
+#
+# อยากลองบน GPU อีกครั้งในอนาคต ตั้ง environment variable นี้ก่อนรัน:
+#     set LPR_PADDLE_DEVICE=gpu:0
+PADDLE_DEVICE = os.environ.get("LPR_PADDLE_DEVICE", "cpu")
 
-PADDLE_DEVICE = os.environ.get("LPR_PADDLE_DEVICE") or \
-    ("gpu:0" if PADDLE_HAS_GPU else "cpu")
+if PADDLE_DEVICE.startswith("gpu"):
+    try:
+        _has_gpu = (paddle.device.is_compiled_with_cuda() and
+                    paddle.device.cuda.device_count() > 0)
+    except Exception:
+        _has_gpu = False
+    if not _has_gpu:
+        print(f"⚠️  ตั้ง LPR_PADDLE_DEVICE={PADDLE_DEVICE} ไว้ แต่ paddle เครื่องนี้ใช้ GPU ไม่ได้", flush=True)
+        print("   (paddlepaddle ที่ลงไว้อาจเป็นรุ่น CPU หรือไม่มีการ์ดจอ) ถอยไปใช้ CPU แทน", flush=True)
+        PADDLE_DEVICE = "cpu"
 
 if PADDLE_DEVICE.startswith("gpu"):
     print(f"🎯 PaddleOCR: รันบน GPU ({PADDLE_DEVICE})", flush=True)
 else:
-    print("⚠️  PaddleOCR: รันบน CPU", flush=True)
-    print("   💡 อยากให้เร็วขึ้น ลง paddlepaddle รุ่น GPU ให้ตรงกับ CUDA ของเครื่อง")
-    print("      (ตอนนี้แยกโปรเซสกับ YOLO แล้ว จึงลงรุ่น GPU ได้โดยไม่ชนกับ torch)")
+    print("⚠️  PaddleOCR: รันบน CPU (ค่าเริ่มต้น — ตั้งใจให้ปลอดภัยไว้ก่อน)", flush=True)
+    print("   อยากลองบน GPU: ตั้ง LPR_PADDLE_DEVICE=gpu:0 ก่อนรัน", flush=True)
 
 print(f"⏳ กำลังโหลดโมเดล: อ่านตัวอักษร={PADDLE_REC_MODEL} | ตรวจจับข้อความ={PADDLE_DET_MODEL}",
       flush=True)
