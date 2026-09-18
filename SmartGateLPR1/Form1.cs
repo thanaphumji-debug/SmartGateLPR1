@@ -531,10 +531,117 @@ namespace SmartGateLPR1
 
         }
 
+        // ===== ระบบรับภาพจากกล้อง: แยก "ดูดเฟรม" ออกจาก "ประมวลผล" =====
+        //
+        // อาการเดิม: พอเริ่มตรวจจับ/อ่านป้าย ภาพจะดีเลย์ 7-10 วินาที และถ้าถอดสาย
+        // กล้องออก ภาพยังขยับต่ออีกหลายวินาทีก่อนจะตัด — นั่นคือหลักฐานชัดเจนว่า
+        // "เฟรมค้างอยู่ในคิว" ไม่ใช่ภาพสด
+        //
+        // สาเหตุ: ลูปเดิมทำทุกอย่างอยู่ในเธรดเดียว —
+        //     capture.Read() -> แปลงเป็น Bitmap -> วาดกรอบ -> ส่งขึ้นจอ (Invoke)
+        //     -> ยิง /detect -> ยิง /predict -> Thread.Sleep(30)
+        // กล้องส่งเฟรมมาทุก ~40ms (25fps) แต่ลูปหนึ่งรอบใช้เวลามากกว่านั้นมาก
+        // (โดยเฉพาะตอน displayBox.Invoke ไปติดรอ UI thread ที่กำลังยุ่ง)
+        // เฟรมที่ตามมาจึงไปกองอยู่ในบัฟเฟอร์ของ FFMPEG/RTSP และ capture.Read()
+        // จะดึง "เฟรมที่เก่าที่สุดในคิว" ออกมาเสมอ ไม่ใช่เฟรมล่าสุด
+        // → ยิ่งรันนาน คิวยิ่งยาว ดีเลย์ยิ่งสะสมขึ้นเรื่อย ๆ ไม่มีวันไล่ทัน
+        //
+        // วิธีแก้: แยกเป็นสองเธรด
+        //   1) เธรดดูดเฟรม (GrabLoop) — วนอ่านให้เร็วที่สุดโดยไม่ทำอะไรเลย
+        //      เก็บไว้แค่ "เฟรมล่าสุดใบเดียว" ใบเก่าทิ้งทันที
+        //      หน้าที่เดียวคือระบายคิวของ FFMPEG ให้ว่างตลอดเวลา
+        //   2) เธรดประมวลผล (CaptureCamera) — หยิบเฟรมล่าสุดไปใช้ตามจังหวะตัวเอง
+        //      ถ้าทำงานช้าก็แค่ "ข้ามเฟรม" ไม่ได้ทำให้คิวยาวขึ้น
+        // ผลคือภาพที่เห็นเป็นเฟรมล่าสุดเสมอ ต่อให้ AI ช้าแค่ไหนก็ไม่หน่วงสะสม
+        private readonly object[] grabLock = { new object(), new object(), new object() };
+        private Mat[] latestGrab = new Mat[3];      // เฟรมล่าสุดที่ยังไม่ถูกหยิบไปใช้
+        private bool[] hasNewGrab = new bool[3];
+        // กันไม่ให้ส่งภาพขึ้นจอซ้อนกันจนคิวของ UI ยาว (ดูเหตุผลที่จุดเรียกใช้)
+        private bool[] displayPending = new bool[3];
+        private readonly object displayLock = new object();
+        // เก็บเฟรมไว้ทำภาพประวัติทุกกี่ ms (ไม่ต้องทุกเฟรม เปลืองเปล่า ๆ)
+        private const int LastFrameSnapshotMs = 200;
+        private DateTime[] lastSnapshotTimes = new DateTime[] { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+
+        private bool CamRunning(int camId) => camId == 1 ? isCam1Running : isCam2Running;
+
+        /// <summary>เปิดกล้องแบบตั้งค่าให้หน่วงน้อยที่สุด</summary>
+        private VideoCapture OpenCameraLowLatency(string url)
+        {
+            // บอก FFMPEG ไม่ให้สะสมบัฟเฟอร์ — ต้องตั้งก่อนสร้าง VideoCapture
+            // (OpenCV อ่านค่านี้ตอนเปิดสตรีม)
+            //   rtsp_transport;tcp = ไม่ให้แพ็กเก็ตหาย (ถ้ากล้องรองรับ udp และ
+            //                        อยากได้หน่วงต่ำกว่านี้อีก เปลี่ยนเป็น udp ได้)
+            //   fflags;nobuffer    = ไม่ต้องสะสมเฟรมไว้ให้ภาพลื่น เอาสดไว้ก่อน
+            //   flags;low_delay    = โหมดหน่วงต่ำของ decoder
+            //   max_delay;0        = ไม่ต้องรอจัดเรียงแพ็กเก็ต
+            try
+            {
+                Environment.SetEnvironmentVariable(
+                    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0");
+            }
+            catch { }
+
+            var cap = new VideoCapture(url);
+            try
+            {
+                // ขอให้ไดรเวอร์เก็บบัฟเฟอร์ไว้ใบเดียว (บางแบ็กเอนด์ไม่รองรับ ไม่เป็นไร)
+                cap.Set(VideoCaptureProperties.BufferSize, 1);
+            }
+            catch { }
+            return cap;
+        }
+
+        /// <summary>เธรดดูดเฟรม: อ่านให้เร็วที่สุด เก็บแต่เฟรมล่าสุด ใบเก่าทิ้งทันที</summary>
+        private void GrabLoop(VideoCapture capture, int camId)
+        {
+            Mat m = new Mat();
+            while (CamRunning(camId))
+            {
+                try
+                {
+                    // ห้ามมีงานหนักหรือ Sleep ในลูปนี้เด็ดขาด — มันคือตัวที่คอย
+                    // ระบายคิวของ FFMPEG ถ้ามันช้า คิวจะยาวและดีเลย์จะกลับมาทันที
+                    if (!capture.Read(m) || m.Empty())
+                    {
+                        Thread.Sleep(5);      // อ่านไม่ได้ (สายหลุด/สตรีมสะดุด) พักสั้น ๆ
+                        continue;
+                    }
+
+                    lock (grabLock[camId])
+                    {
+                        latestGrab[camId]?.Dispose();   // ใบเก่ายังไม่ถูกใช้ก็ทิ้งเลย
+                        latestGrab[camId] = m.Clone();
+                        hasNewGrab[camId] = true;
+                    }
+                }
+                catch
+                {
+                    Thread.Sleep(5);
+                }
+            }
+            m.Dispose();
+        }
+
+        /// <summary>หยิบเฟรมล่าสุดไปใช้ (คืน null ถ้ายังไม่มีเฟรมใหม่ตั้งแต่ครั้งก่อน)
+        /// ผู้เรียกเป็นเจ้าของ Mat ที่ได้ ต้อง Dispose เอง</summary>
+        private Mat TakeLatestGrab(int camId)
+        {
+            lock (grabLock[camId])
+            {
+                if (!hasNewGrab[camId] || latestGrab[camId] == null) return null;
+                hasNewGrab[camId] = false;
+                Mat m = latestGrab[camId];
+                latestGrab[camId] = null;
+                return m;
+            }
+        }
+
         // --- 3. ฟังก์ชันดึงภาพ (ใช้ร่วมกันได้ โดยดูจาก ID) ---
         private void CaptureCamera(string url, PictureBox displayBox, int camId)
         {
-            VideoCapture capture = new VideoCapture(url);
+            VideoCapture capture = OpenCameraLowLatency(url);
 
             if (!capture.IsOpened())
             {
@@ -548,81 +655,145 @@ namespace SmartGateLPR1
                 return;
             }
 
-            Mat frame = new Mat();
+            // เธรดดูดเฟรมทำงานคู่ขนานไปตลอด ไม่ว่าเธรดนี้จะช้าแค่ไหน
+            Thread grabber = new Thread(() => GrabLoop(capture, camId)) { IsBackground = true };
+            grabber.Start();
 
             // วนลูปโดยเช็คสถานะของใครของมัน
-            while ((camId == 1 && isCam1Running) || (camId == 2 && isCam2Running))
+            while (CamRunning(camId))
             {
+                Mat frame = TakeLatestGrab(camId);
+                if (frame == null)
+                {
+                    Thread.Sleep(5);          // ยังไม่มีเฟรมใหม่ รอสั้น ๆ
+                    continue;
+                }
+
                 try
                 {
-                    capture.Read(frame);
-                    if (!frame.Empty())
+                    using (frame)
                     {
-                        Bitmap image = BitmapConverter.ToBitmap(frame);
-                        // เก็บเฟรมล่าสุดไว้ใช้บันทึกภาพประวัติ (เก็บทีละ 1 ใบ ทิ้งใบเก่าทันที กัน RAM บวม)
-                        lock (frameLock)
-                        {
-                            if (lastFrame[camId] != null) lastFrame[camId].Dispose();
-                            lastFrame[camId] = (Bitmap)image.Clone();
-                        }
+                        // ---- ตัดสินใจก่อนว่ารอบนี้ต้องใช้ภาพทำอะไรบ้าง ----
+                        // ถ้าไม่ต้องทำอะไรเลย จะได้ไม่เสียเวลาแปลงเป็น Bitmap
+                        // (การแปลงภาพ 1080p + วาดกรอบ ใช้เวลาหลายมิลลิวินาที
+                        //  ถ้าทำทิ้งทุกเฟรมโดยไม่ได้ใช้ ก็เปลืองซีพียูเปล่า ๆ)
+                        bool needDisplay;
+                        lock (displayLock) needDisplay = !displayPending[camId];
 
-                        // --- 1. โชว์ภาพสดขึ้นหน้าจอ UI ทันที (ทำทุกเฟรม ภาพจะได้ไม่กระตุก) ---
-                        Bitmap displayImage = (Bitmap)image.Clone();
-                        DrawPlateOverlay(displayImage, camId);
-                        displayBox.Invoke(new Action(() =>
-                        {
-                            if (displayBox.Image != null) displayBox.Image.Dispose();
-                            displayBox.Image = displayImage;
-                        }));
-
-                        // --- 1.5 อัปเดตกรอบแดงให้ตามป้าย: เรียก /detect เป็นระยะ ---
-                        // กำลังเกาะติดป้ายอยู่ → ยิงถี่กว่าปกติได้ เพราะฝั่ง AI ค้นเฉพาะ
-                        // รอบกรอบเดิม (ROI) ซึ่งเร็วกว่าค้นทั้งเฟรมหลายเท่า กรอบจะตามลื่น
                         bool nowTracking;
                         lock (boxLock) nowTracking = hasPlateBox[camId];
                         int myInterval = nowTracking ? trackIntervalMs : detectIntervalMs;
                         lock (turnLock)
                         {
-                            // อีกกล้องกำลังอ่านเลขอยู่ → กล้องนี้ลดความถี่ลง คืน GPU ให้ตัวที่กำลังทำงาน
+                            // อีกกล้องกำลังอ่านเลขอยู่ → กล้องนี้ลดความถี่ลง คืนเครื่องให้ตัวที่กำลังทำงาน
                             if (lprOwner != 0 && lprOwner != camId) myInterval *= 3;
                         }
-                        if (!isDetecting[camId] &&
-                            (DateTime.Now - lastDetectTimes[camId]).TotalMilliseconds >= myInterval)
-                        {
-                            lastDetectTimes[camId] = DateTime.Now;
-                            Bitmap detectFrame = new Bitmap(image);
-                            Task.Run(() => DetectBox(detectFrame, camId));
-                        }
+                        bool needDetect = !isDetecting[camId] &&
+                            (DateTime.Now - lastDetectTimes[camId]).TotalMilliseconds >= myInterval;
 
-
-                        // --- 2. ระบบ Auto-Trigger เช็คป้ายทะเบียน ---
-                        // เงื่อนไขใหม่: ยิงอ่านตราบใดที่ "เห็นกรอบป้ายอยู่" ไม่ใช่แค่ตอนมีความเคลื่อนไหว
+                        // ยิงอ่านตราบใดที่ "เห็นกรอบป้ายอยู่" ไม่ใช่แค่ตอนมีความเคลื่อนไหว
                         // (แก้ปัญหา: รถหยุดนิ่งสนิทแล้วภาพไม่เปลี่ยน ระบบเดิมจะไม่ยิงอ่านซ้ำอีกเลย)
-                        bool seeingPlate;
-                        lock (boxLock) seeingPlate = hasPlateBox[camId];
+                        bool needRead = nowTracking &&
+                            (DateTime.Now - lastCaptureTimes[camId]).TotalSeconds >= cooldownSeconds;
 
-                        if (seeingPlate &&
-                            (DateTime.Now - lastCaptureTimes[camId]).TotalSeconds >= cooldownSeconds)
+                        bool needSnapshot =
+                            (DateTime.Now - lastSnapshotTimes[camId]).TotalMilliseconds >= LastFrameSnapshotMs;
+
+                        if (!needDisplay && !needDetect && !needRead && !needSnapshot)
+                            continue;
+
+                        Bitmap image = BitmapConverter.ToBitmap(frame);
+                        try
                         {
-                            lastCaptureTimes[camId] = DateTime.Now;
+                            // เก็บเฟรมล่าสุดไว้ใช้บันทึกภาพประวัติ (ไม่ต้องทำทุกเฟรม —
+                            // ภาพประวัติเก่ากว่าปัจจุบันเสี้ยววินาทีก็ไม่ต่างอะไร
+                            // แต่การ clone ภาพ 1080p ทุกเฟรมเปลืองซีพียูจริง)
+                            if (needSnapshot)
+                            {
+                                lastSnapshotTimes[camId] = DateTime.Now;
+                                Bitmap snap = (Bitmap)image.Clone();
+                                lock (frameLock)
+                                {
+                                    if (lastFrame[camId] != null) lastFrame[camId].Dispose();
+                                    lastFrame[camId] = snap;
+                                }
+                            }
 
-                            // ส่งรูปเต็มไปให้ AI อ่าน (ภาพใหม่จากเฟรมปัจจุบันเสมอ)
-                            Bitmap frameToSend = new Bitmap(image);
-                            Task.Run(() => SendToAI(frameToSend, camId));
+                            // --- 1. โชว์ภาพสดขึ้นหน้าจอ UI ---
+                            //
+                            // ⚠️ ต้องเป็น BeginInvoke ห้ามใช้ Invoke — Invoke จะ "บล็อก"
+                            // เธรดนี้ไว้จนกว่า UI thread จะว่างมารับงาน ซึ่งตอน AI ทำงาน
+                            // UI thread ยุ่งมาก เธรดนี้เลยค้างยาว → คิวเฟรมยิ่งพอกขึ้น
+                            // (นี่คือสาเหตุหลักข้อหนึ่งของอาการหน่วง 7-10 วินาที)
+                            //
+                            // และต้องกันไม่ให้ส่งซ้อนด้วย (displayPending) ไม่งั้นถ้า UI
+                            // ตามไม่ทัน งานจะไปกองในคิวของ UI แทน พร้อมกับ Bitmap ที่
+                            // ยังไม่ถูกปล่อย = ทั้งหน่วงทั้งกินแรม
+                            if (needDisplay)
+                            {
+                                lock (displayLock) displayPending[camId] = true;
+                                Bitmap displayImage = (Bitmap)image.Clone();
+                                DrawPlateOverlay(displayImage, camId);
+                                try
+                                {
+                                    displayBox.BeginInvoke(new Action(() =>
+                                    {
+                                        try
+                                        {
+                                            var old = displayBox.Image;
+                                            displayBox.Image = displayImage;
+                                            old?.Dispose();
+                                        }
+                                        finally
+                                        {
+                                            lock (displayLock) displayPending[camId] = false;
+                                        }
+                                    }));
+                                }
+                                catch
+                                {
+                                    displayImage.Dispose();
+                                    lock (displayLock) displayPending[camId] = false;
+                                }
+                            }
+
+                            // --- 1.5 อัปเดตกรอบแดงให้ตามป้าย: เรียก /detect เป็นระยะ ---
+                            if (needDetect)
+                            {
+                                lastDetectTimes[camId] = DateTime.Now;
+                                Bitmap detectFrame = new Bitmap(image);
+                                Task.Run(() => DetectBox(detectFrame, camId));
+                            }
+
+                            // --- 2. ระบบ Auto-Trigger เช็คป้ายทะเบียน ---
+                            if (needRead)
+                            {
+                                lastCaptureTimes[camId] = DateTime.Now;
+                                // ส่งรูปเต็มไปให้ AI อ่าน (ภาพใหม่จากเฟรมปัจจุบันเสมอ)
+                                Bitmap frameToSend = new Bitmap(image);
+                                Task.Run(() => SendToAI(frameToSend, camId));
+                            }
                         }
-
-                        image.Dispose();
+                        finally
+                        {
+                            image.Dispose();
+                        }
                     }
-
                 }
                 catch
                 {
                     // กรณี Error ข้ามไปก่อน
                 }
-
-                Thread.Sleep(30);
             }
 
+            // รอเธรดดูดเฟรมจบก่อนค่อยปิดกล้อง ไม่งั้นมันจะไปอ่าน capture ที่ถูกปิดไปแล้ว
+            try { grabber.Join(500); } catch { }
+            lock (grabLock[camId])
+            {
+                latestGrab[camId]?.Dispose();
+                latestGrab[camId] = null;
+                hasNewGrab[camId] = false;
+            }
             capture.Release();
             ShowCameraPlaceholder(displayBox, "CAMERA NOT FOUND");   // ⬅️ เพิ่ม
         }
@@ -1727,7 +1898,11 @@ namespace SmartGateLPR1
                                 }
                             }
 
-                            this.Invoke((MethodInvoker)delegate
+                            // BeginInvoke ไม่ใช่ Invoke — Invoke จะบล็อกเธรดนี้รอ UI
+                            // thread ว่าง ซึ่งตอนมี 2 กล้องทำงานพร้อมกัน UI thread ยุ่งมาก
+                            // ทำให้งานอ่านป้ายค้างยาวและพลอยทำให้เฟรมกล้องกองคิวตามไปด้วย
+                            // งานในนี้ไม่มีอะไรที่ต้องรอผลกลับ จึงยิงแล้วปล่อยได้เลย
+                            this.BeginInvoke((MethodInvoker)delegate
                             {
                                 SetPlateText(camId, plateText);
                                 if (submitNow)
@@ -1984,6 +2159,8 @@ namespace SmartGateLPR1
 
         private void ShowNoSignal(PictureBox box, string msg)
         {
+            // เรียกจากเธรดกล้อง — ใช้ BeginInvoke ไม่ให้เธรดค้างรอ UI (เหมือน ShowCameraPlaceholder)
+            if (box.InvokeRequired) { box.BeginInvoke(new Action(() => ShowNoSignal(box, msg))); return; }
             Bitmap bmp = new Bitmap(Math.Max(box.Width, 320), Math.Max(box.Height, 240));
             using (Graphics g = Graphics.FromImage(bmp))
             using (var font = new System.Drawing.Font("Tahoma", 14, FontStyle.Bold))
@@ -1992,11 +2169,8 @@ namespace SmartGateLPR1
                 SizeF sz = g.MeasureString(msg, font);
                 g.DrawString(msg, font, Brushes.Red, (bmp.Width - sz.Width) / 2, (bmp.Height - sz.Height) / 2);
             }
-            box.Invoke(new Action(() =>
-            {
-                if (box.Image != null) box.Image.Dispose();
-                box.Image = bmp;
-            }));
+            if (box.Image != null) box.Image.Dispose();
+            box.Image = bmp;
         }
 
         private void ShowCameraPlaceholder(PictureBox box, string msg = "CAMERA NOT FOUND")
