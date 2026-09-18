@@ -108,7 +108,12 @@ namespace SmartGateLPR1
         // อยู่ระหว่างเฟรมที่ยังจับกรอบไม่ติด (รถเพิ่งเข้าเฟรม/ป้ายเอียง) พอรอสัก
         // ครู่มันก็เจอ แต่ผลตัดสินออกไปก่อนแล้ว กลายเป็น "อ่านได้จากกล้องเดียว"
         // ทั้งที่จริง ๆ อ่านได้ทั้งคู่
-        private double noPlateWaitSec = 3.0;
+        //
+        // เคยตั้งไว้ 3 วิ ซึ่งยังสั้นไป ผู้ใช้วัดจากหน้างานได้ 3 วิบ้าง 6-8 วิบ้าง
+        // (ต่างกันเพราะถ้าอีกกล้องเผลอจับกรอบติดแวบหนึ่ง ตัวนับจะถูกเลื่อนออกไป
+        // ทีละ otherCamIdleSec) ตอนนี้ตั้ง 15 วิเท่ากับเวลารอตัวอื่น ๆ ทั้งชุด
+        // ทั้งสองทิศทาง (หน้าส่ง-หลังไม่เจอ / หลังส่ง-หน้าไม่เจอ) จึงรอเท่ากันแน่นอน
+        private double noPlateWaitSec = 15.0;
         // อีกกล้องต้อง "ไม่เห็นกรอบป้ายเลย" ต่อเนื่องกี่วินาที ถึงจะนับว่าว่างจริง
         //
         // เดิมดูแค่ธง ณ วินาทีนั้น (isReading / plateSeen / confirmCount) ซึ่งกระพริบ
@@ -1526,8 +1531,14 @@ namespace SmartGateLPR1
         {
             double longestWait = Math.Max(otherCamHardCapSec,
                                  Math.Max(noPlateGraceSec,
-                                 Math.Max(plateUnconfirmedWaitSec, noPlateDenySec)));
+                                 Math.Max(plateUnconfirmedWaitSec,
+                                 Math.Max(noPlateDenySec, noPlateWaitSec))));
 
+            if (noPlateWaitSec > otherCamMaxWaitSec)
+            {
+                noPlateWaitSec = otherCamMaxWaitSec;
+                WarnTiming($"noPlateWaitSec ต้องไม่เกิน otherCamMaxWaitSec \u2192 ปรับเป็น {noPlateWaitSec}");
+            }
             if (otherCamHardCapSec <= otherCamMaxWaitSec)
             {
                 otherCamHardCapSec = otherCamMaxWaitSec + 3;
