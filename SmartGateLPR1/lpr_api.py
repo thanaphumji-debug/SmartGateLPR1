@@ -260,6 +260,27 @@ _PADDLE_ENGINE_CFG = {
     }
 }
 
+# ---------- ทางเลือกเอนจิน: onnxruntime แทน paddle inference เดิม ----------
+#
+# วัดจริงจากเครื่องที่ใช้งาน (log จริง ไม่ใช่ค่าประมาณ): ครอปป้ายแค่ 145x86px
+# กับ 136x82px (เล็กมาก) แต่ OCR ใช้เวลา 1.35s และ 1.71s ตามลำดับ — เวลาไม่ได้
+# แปรผันตามขนาดภาพเลย แปลว่าเป็น "ต้นทุนคงที่ต่อการเรียกหนึ่งครั้ง" ของตัว
+# เอนจิน ไม่ใช่ปัญหาขนาดภาพอีกต่อไป ซึ่งเข้าได้กับที่ oneDNN ถูกบังคับปิดไว้
+# (ดูเหตุผลด้านบน) — inference บน CPU แบบไม่มี oneDNN ช้ากว่าเป็นเท่าตัว
+#
+# PaddleX รองรับสลับเอนจินเป็น onnxruntime อย่างเป็นทางการ (ดู
+# paddlex/inference/models/runners/onnxruntime_runner.py) ซึ่งมักเร็วกว่า
+# paddle inference เองบน CPU มาก เพราะไม่ต้องแบกภาระของ pipeline/IR ชั้นบน
+# ของ paddle เอง — engine="onnxruntime" ให้ paddlex แปลงโมเดลเป็น .onnx
+# อัตโนมัติ (ครั้งแรกใช้เวลานานกว่าปกติ) แล้วรันด้วย onnxruntime แทน
+#
+# ⚠️ ยังไม่ได้วัดผลจริงว่าเร็วขึ้นแค่ไหน (ต้อง pip install onnxruntime และ
+# ทดสอบบนเครื่องจริงที่มีการ์ดจอ/ซีพียูตัวนี้เท่านั้น) จึงปิดไว้เป็นค่าเริ่มต้น
+# เปิดทดลองได้ด้วย LPR_OCR_ENGINE=onnxruntime — ถ้าใช้ไม่ได้ (ไม่ได้ลง
+# onnxruntime ไว้ หรือรุ่น paddleocr ไม่รองรับ) จะถอยไปใช้ paddle เหมือนเดิม
+# ให้เองอัตโนมัติ ไม่ทำให้ระบบพัง
+OCR_ENGINE = os.environ.get("LPR_OCR_ENGINE", "").strip() or None
+
 _ocr_kwargs = dict(
     text_recognition_model_name=PADDLE_REC_MODEL,
     text_detection_model_name=PADDLE_DET_MODEL,
@@ -275,17 +296,32 @@ _ocr_kwargs = dict(
     # (ดู _resize_for_ocr ด้านล่าง) แม่นกว่าและเร็วกว่าปล่อยให้ Paddle ทำเอง
     engine_config=_PADDLE_ENGINE_CFG,
 )
+if OCR_ENGINE:
+    _ocr_kwargs["engine"] = OCR_ENGINE
 
 try:
     ocr = PaddleOCR(**_ocr_kwargs)
 except (TypeError, ValueError) as e:
-    # paddleocr รุ่นเก่ายังไม่มีพารามิเตอร์ engine_config — ถอยไปใช้แบบเดิม
-    # (ยังมี enable_mkldnn=False กับ environment variable ด้านบนคุมอยู่)
-    if "engine_config" not in str(e):
+    if "engine_config" in str(e):
+        # paddleocr รุ่นเก่ายังไม่มีพารามิเตอร์ engine_config — ถอยไปใช้แบบเดิม
+        # (ยังมี enable_mkldnn=False กับ environment variable ด้านบนคุมอยู่)
+        print(f"ℹ️  paddleocr รุ่นนี้ไม่รองรับ engine_config ({e}) — ใช้ค่าเริ่มต้นแทน")
+        _ocr_kwargs.pop("engine_config", None)
+        ocr = PaddleOCR(**_ocr_kwargs)
+    else:
         raise
-    print(f"ℹ️  paddleocr รุ่นนี้ไม่รองรับ engine_config ({e}) — ใช้ค่าเริ่มต้นแทน")
-    _ocr_kwargs.pop("engine_config", None)
-    ocr = PaddleOCR(**_ocr_kwargs)
+except Exception as e:
+    if OCR_ENGINE:
+        # เอนจินที่ขอ (เช่น onnxruntime) ใช้ไม่ได้ — อาจไม่ได้ลงแพ็กเกจไว้
+        # หรือโมเดลแปลงไม่ผ่าน — ถอยไปใช้ paddle engine ปกติแทนเสมอ
+        print(f"⚠️  เปิดเอนจิน '{OCR_ENGINE}' ไม่สำเร็จ ({e}) — ใช้เอนจิน paddle ปกติแทน", flush=True)
+        _ocr_kwargs.pop("engine", None)
+        ocr = PaddleOCR(**_ocr_kwargs)
+    else:
+        raise
+else:
+    if OCR_ENGINE:
+        print(f"⚡ ใช้เอนจิน '{OCR_ENGINE}' แทน paddle inference เดิม (ทดลอง)", flush=True)
 
 # ---------- warm-up: ซ้อมอ่านภาพเปล่า 1 ครั้ง กันภาพแรกช้าผิดปกติ ----------
 print("🔥 กำลัง warm-up โมเดล...", flush=True)
