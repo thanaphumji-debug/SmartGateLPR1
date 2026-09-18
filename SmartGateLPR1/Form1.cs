@@ -109,6 +109,13 @@ namespace SmartGateLPR1
         // ครู่มันก็เจอ แต่ผลตัดสินออกไปก่อนแล้ว กลายเป็น "อ่านได้จากกล้องเดียว"
         // ทั้งที่จริง ๆ อ่านได้ทั้งคู่
         private double noPlateWaitSec = 3.0;
+        // อีกกล้องต้อง "ไม่เห็นกรอบป้ายเลย" ต่อเนื่องกี่วินาที ถึงจะนับว่าว่างจริง
+        //
+        // เดิมดูแค่ธง ณ วินาทีนั้น (isReading / plateSeen / confirmCount) ซึ่งกระพริบ
+        // ตลอดเวลา — ว่างระหว่างยิง OCR แต่ละรอบบ้าง ตัวนับพลาดเฟรมบ้าง พอ TryDecide
+        // มาเช็คตรงจังหวะที่บังเอิญว่างครบทั้งสามธง ก็เลิกรอตั้งแต่ 3 วิ (noPlateWaitSec)
+        // ทั้งที่กล้องนั้นกำลังอ่านป้ายอยู่แท้ ๆ → ผลออกที่ 8-9 วิแทนที่จะรอครบ 15 วิ
+        private double otherCamIdleSec = 2.5;
         // ล็อกแล้วอ่านซ้ำเพื่อ "ตรวจทาน" ทุกกี่วินาที
         //
         // เดิมล็อกแล้วคือหยุดอ่านถาวร จนกว่าจะครบรอบเปิด-ปิดไม้กั้น (ResetLprTurn)
@@ -1311,6 +1318,13 @@ namespace SmartGateLPR1
             bool otherSeeing;
             lock (hybridLock) otherSeeing = plateSeen[other];
 
+            // อีกกล้องเพิ่งเห็นกรอบป้ายไปเมื่อไม่นานมานี้ไหม — ดูจาก "เวลา" แทนธง
+            // ชั่วขณะ ธงกระพริบได้ แต่เวลาที่เจอกรอบล่าสุดไม่กระพริบ
+            DateTime otherBoxAt;
+            lock (boxLock) otherBoxAt = latestBoxTime[other];
+            bool otherRecentlySawPlate = otherBoxAt != DateTime.MinValue &&
+                                         (DateTime.Now - otherBoxAt).TotalSeconds < otherCamIdleSec;
+
             lock (turnLock)
             {
                 if (plateSubmitted[other]) return false;     // อีกกล้องส่งมาแล้ว (ค่าหมดอายุไปเอง) ไม่ต้องรอ
@@ -1326,7 +1340,8 @@ namespace SmartGateLPR1
                 if (waited >= otherCamMaxWaitSec && !isReading[other]) return false;
 
                 // อีกกล้องกำลังทำงานอยู่จริงไหม
-                bool busy = isReading[other] || confirmCount[other] > 0 || otherSeeing;
+                bool busy = isReading[other] || confirmCount[other] > 0 ||
+                            otherSeeing || otherRecentlySawPlate;
                 if (!busy)
                 {
                     // ไม่เจอป้าย ไม่ได้อ่านอะไรอยู่ → ให้โอกาสอีก noPlateWaitSec วินาที
@@ -1944,7 +1959,14 @@ namespace SmartGateLPR1
 
                 if (IsPlausiblePlate(plateRead))
                 {
-                    if (plateRead == lastReadPlate[camId])
+                    // เทียบแบบตัดช่องว่าง/ขีดออกก่อน (NormPlate) ไม่ใช่เทียบตรงตัวอักษร
+                    //
+                    // บักเดิม: OCR อ่านรอบแรกได้ "กย 3779" รอบสองได้ "กย3779" ซึ่งเป็น
+                    // เลขเดียวกันแท้ ๆ แต่สตริงไม่ตรงกัน โค้ดจึงคิดว่า "เปลี่ยนเป็นคันใหม่"
+                    // แล้วรีเซ็ตตัวนับยืนยันกลับเป็น 1 ทุกรอบ ผลคือกล้องที่ conf ต่ำกว่า
+                    // เกณฑ์ (ต้องอ่านซ้ำให้ได้เลขเดิม 2 ครั้ง) ไม่มีวันยืนยันสำเร็จเลย
+                    // — ตรงกับอาการ "กล้องหลังไม่ยอมส่งค่า ทั้งที่เลขถูกแล้ว"
+                    if (NormPlate(plateRead) == NormPlate(lastReadPlate[camId]))
                     {
                         confirmCount[camId]++;
                         // เก็บค่าที่มั่นใจที่สุดของเลขนี้ไว้ส่งให้ศูนย์ตัดสินใจ
