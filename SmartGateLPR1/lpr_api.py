@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import os
 import threading
 import io
@@ -149,6 +149,7 @@ PADDLE_DET_MODEL = os.environ.get("LPR_PADDLE_DET", "PP-OCRv5_mobile_det")
 # หมุนบรรทัดข้อความที่กลับหัว — เราดัดป้ายให้ตรงเองอยู่แล้วด้วย deskew_plate()
 # จึงปิดได้ ประหยัดการรันโมเดลเพิ่มอีกตัวต่อทุกบรรทัดที่เจอ
 PADDLE_TEXTLINE_ORI = os.environ.get("LPR_TEXTLINE_ORI", "0") == "1"
+
 
 app = Flask(__name__)
 
@@ -471,6 +472,8 @@ def read_plate_paddle(plate_img, return_raw=False):
 
     # PaddleOCR ไม่ปลอดภัยเมื่อถูกเรียกพร้อมกันหลาย thread และ Flask รันแบบ threaded
     # จึงต้องล็อกไว้เหมือนตอนเรียก YOLO
+    ocr_h, ocr_w = (plate_img.shape[:2] if plate_img is not None and plate_img.size > 0
+                    else (0, 0))
     with model_lock:
         result = ocr.predict(plate_img)
 
@@ -484,7 +487,7 @@ def read_plate_paddle(plate_img, return_raw=False):
     plate_text = parsed["plate"]
 
     if SAVE_DEBUG_PLATE:
-        print(f"   [paddle] อ่านดิบ: {parsed['raw']}")
+        print(f"   [paddle] ภาพที่ส่งเข้า OCR {ocr_w}x{ocr_h}px | อ่านดิบ: {parsed['raw']}")
 
     # ความมั่นใจ: ใช้ของบรรทัดเลขทะเบียนเป็นหลัก เพราะเป็นตัวตัดสินการเข้า-ออก
     # ถ้าดัดเป็นทะเบียนไม่ได้เลย ให้ถือว่าอ่านไม่สำเร็จ (คะแนนเฉลี่ยไว้ดูเฉย ๆ)
@@ -647,7 +650,23 @@ def predict():
         suspicious = crop_ratio < MIN_PLATE_ASPECT or not plate_text or len(plate_text) < 5
         if suspicious:
             t_extra0 = time.time()
-            alt_text, alt_conf, alt_raw = read_plate_paddle(frame, return_raw=True)
+            # อ่านซ้ำบน "crop ที่ขยายออกรอบกรอบเดิม" ไม่ใช่ทั้งเฟรม
+            #
+            # เดิมตรงนี้ยิง OCR ใส่ภาพเต็ม 1080p ซึ่งเป็นงานที่แพงที่สุดในระบบ
+            # และมันถูกเรียกทุกครั้งที่อ่านไม่ออก (ซึ่งเกิดบ่อย เพราะฝั่ง C#
+            # ยิงอ่านซ้ำตลอดเวลาที่รถอยู่ในเฟรม) = จุดที่เสียเวลามากที่สุด
+            #
+            # จุดประสงค์เดิมคือกันเคส "YOLO ตัดกรอบขาดครึ่งป้าย" ซึ่งการขยาย
+            # กรอบออกไปรอบ ๆ ก็แก้ได้เหมือนกัน แต่ใช้พิกเซลน้อยกว่าเป็นร้อยเท่า
+            ew, eh = (x2 - x1), (y2 - y1)
+            ax1 = max(0, x1 - ew // 2)
+            ay1 = max(0, y1 - eh // 2)
+            ax2 = min(w, x2 + ew // 2)
+            ay2 = min(h, y2 + eh // 2)
+            alt_src = frame[ay1:ay2, ax1:ax2]
+            if alt_src.size == 0:
+                alt_src = frame
+            alt_text, alt_conf, alt_raw = read_plate_paddle(alt_src, return_raw=True)
             t_ocr_extra = time.time() - t_extra0
             # เลือกผลที่ "สมบูรณ์กว่า" โดยดูจากความยาว — ถ้ากรอบตัดขาดจริง ผลจาก
             # ภาพเต็มควรยาวกว่า (ไม่ได้ตัด) ถ้าอ่านจากกรอบได้ครบอยู่แล้วก็ไม่เปลี่ยน
@@ -671,11 +690,13 @@ def predict():
 
         # แยกเวลาแต่ละขั้นให้เห็นชัดว่าช้าตรงไหน (ไม่งั้นเดาไม่ถูกว่าจะไปแก้จุดไหน)
         elapsed = time.time() - t0
-        extra = f" + OCR ซ้ำภาพเต็ม {t_ocr_extra:.2f}s" if t_ocr_extra else ""
+        extra = f" + อ่านซ้ำกรอบขยาย {t_ocr_extra:.2f}s" if t_ocr_extra else ""
+        ph, pw = plate.shape[:2]
         print(f"🚗 อ่านได้: {plate_text} | conf {confidence:.2f} | ⏱️ รวม {elapsed:.2f}s "
               f"= ถอดภาพ {t_decode:.2f}s + หากรอบ {t_yolo:.2f}s"
               f"{' (ใช้กรอบจาก /detect)' if used_roi else ' (ค้นทั้งเฟรม)'}"
-              f" + อ่านตัวอักษร {t_ocr:.2f}s{extra}")
+              f" + อ่านตัวอักษร {t_ocr:.2f}s{extra}"
+              f" | crop ป้าย {pw}x{ph}px")
 
         # คีย์ 'text' คือค่าที่ฝั่ง C# เอาไปใช้ (result.text) — ต้องมีเสมอ
         return jsonify({
