@@ -56,10 +56,8 @@
             groupBox3 = new GroupBox();
             groupBox6 = new GroupBox();
             lblLicensePlate2 = new Label();
-            lblLprStatus2 = new Label();
             groupBox5 = new GroupBox();
             lblLicensePlate1 = new Label();
-            lblLprStatus1 = new Label();
             groupBox4 = new GroupBox();
             ((System.ComponentModel.ISupportInitialize)pbCamera1).BeginInit();
             ((System.ComponentModel.ISupportInitialize)pbCamera2).BeginInit();
@@ -327,7 +325,6 @@
             // groupBox6
             // 
             groupBox6.Controls.Add(lblLicensePlate2);
-            groupBox6.Controls.Add(lblLprStatus2);
             groupBox6.Location = new Point(236, 21);
             groupBox6.Name = "groupBox6";
             groupBox6.Size = new Size(210, 261);
@@ -345,20 +342,9 @@
             lblLicensePlate2.TabIndex = 31;
             lblLicensePlate2.Text = "แสดงเลขทะเบียน";
             // 
-            // lblLprStatus2
-            // 
-            lblLprStatus2.AutoSize = true;
-            lblLprStatus2.ForeColor = Color.DarkBlue;
-            lblLprStatus2.Location = new Point(35, 168);
-            lblLprStatus2.Name = "lblLprStatus2";
-            lblLprStatus2.Size = new Size(141, 15);
-            lblLprStatus2.TabIndex = 32;
-            lblLprStatus2.Text = "สถานะการตรวจจับป้ายทะเบียน";
-            // 
             // groupBox5
             // 
             groupBox5.Controls.Add(lblLicensePlate1);
-            groupBox5.Controls.Add(lblLprStatus1);
             groupBox5.Location = new Point(18, 22);
             groupBox5.Name = "groupBox5";
             groupBox5.Size = new Size(200, 261);
@@ -375,16 +361,6 @@
             lblLicensePlate1.Size = new Size(81, 15);
             lblLicensePlate1.TabIndex = 29;
             lblLicensePlate1.Text = "แสดงเลขทะเบียน";
-            // 
-            // lblLprStatus1
-            // 
-            lblLprStatus1.AutoSize = true;
-            lblLprStatus1.ForeColor = Color.DarkBlue;
-            lblLprStatus1.Location = new Point(35, 168);
-            lblLprStatus1.Name = "lblLprStatus1";
-            lblLprStatus1.Size = new Size(141, 15);
-            lblLprStatus1.TabIndex = 28;
-            lblLprStatus1.Text = "สถานะการตรวจจับป้ายทะเบียน";
             // 
             // groupBox4
             // 
@@ -472,13 +448,11 @@
         private GroupBox groupBox2;
         private GroupBox groupBox3;
         private GroupBox groupBox4;
-        private Label lblLprStatus1;
         private Label label4;
         private Label label3;
         private Label lblRfidStatus;
         private GroupBox groupBox6;
         private Label lblLicensePlate2;
-        private Label lblLprStatus2;
         private GroupBox groupBox5;
         private Label lblLicensePlate1;
         private Label txtRFIDInput2;

@@ -213,7 +213,101 @@ namespace SmartGateLPR1
             (s ?? "").Replace(" ", "").Replace("-", "").Trim();
 
         private Label PlateLabel(int camId) => camId == 1 ? lblLicensePlate1 : lblLicensePlate2;
-        private Label StatusLabel(int camId) => camId == 1 ? lblLprStatus1 : lblLprStatus2;
+        // ===== แถบสถานะ 3 บรรทัดต่อกล้อง 1 ตัว =====
+        //
+        // เดิมเป็น Label เดียว (lblLprStatus1/2) ที่เขียนทับข้อความไปเรื่อย ๆ
+        // ผู้ใช้จึงเห็นแค่ "สถานะล่าสุด" ไม่รู้ว่าเดินมาถึงขั้นไหนแล้ว และข้อความ
+        // กระพริบเปลี่ยนเร็วมากจนอ่านไม่ทัน
+        //
+        // แบบใหม่: แสดงเป็นขั้นบันได 3 บรรทัด ค้างไว้ให้เห็นทั้งกระบวนการ
+        //   บรรทัด 1  ตรวจจับป้าย            เทา → เจอป้ายแล้วเปลี่ยนเป็นเหลืองค้าง
+        //   บรรทัด 2  OCR กำลังประมวลผล     โผล่มาเป็นเหลือง → อ่านได้แล้วเป็นเขียวค้าง
+        //   บรรทัด 3  ผลยืนยันเรียบร้อยแล้ว  เขียวค้าง (กล้องตัวนี้หยุดอ่านจนกว่าผลตัดสินจะออก)
+        // พอผลตัดสินออก ทุกบรรทัดกลับไปจุดเริ่มต้น (เหลือบรรทัด 1 สีเทา)
+        private enum LprStage
+        {
+            Idle = 0,        // ยังไม่เจอป้าย
+            PlateFound = 1,  // เจอกรอบป้ายแล้ว
+            Ocr = 2,         // กำลังอ่านตัวอักษร
+            OcrDone = 3,     // อ่านตัวอักษรได้แล้ว
+            Confirmed = 4,   // ส่งเข้าระบบตัดสินแล้ว รอผล
+        }
+
+        private readonly Label[,] lprLines = new Label[3, 3];   // [camId, บรรทัด 0-2]
+        private readonly LprStage[] lprStage = new LprStage[3];
+
+        private static readonly Color StageGray = Color.Gray;
+        // เหลืองล้วนบนพื้นขาวอ่านแทบไม่ออก ใช้เหลืองเข้ม (amber) แทนให้ยังอ่านได้
+        private static readonly Color StageYellow = Color.FromArgb(200, 150, 0);
+        private static readonly Color StageGreen = Color.FromArgb(0, 150, 60);
+
+        /// <summary>สร้าง Label 3 บรรทัดของทั้งสองกล้อง (แทน lblLprStatus1/2 ที่ถอดออกไปแล้ว)</summary>
+        private void InitLprStatusLines()
+        {
+            string[] texts = { "🔍 ตรวจจับป้าย", "🔤 OCR กำลังประมวลผล", "✅ ผลยืนยันเรียบร้อยแล้ว" };
+            for (int camId = 1; camId <= 2; camId++)
+            {
+                var host = camId == 1 ? groupBox5 : groupBox6;
+                for (int i = 0; i < 3; i++)
+                {
+                    var lbl = new Label
+                    {
+                        AutoSize = true,
+                        Location = new System.Drawing.Point(20, 160 + i * 22),
+                        Font = new Font("Tahoma", 9f, FontStyle.Bold),
+                        ForeColor = StageGray,
+                        Text = texts[i],
+                        Visible = i == 0,          // เริ่มต้นโชว์แค่บรรทัดแรก
+                    };
+                    host.Controls.Add(lbl);
+                    lbl.BringToFront();
+                    lprLines[camId, i] = lbl;
+                }
+                lprStage[camId] = LprStage.Idle;
+            }
+        }
+
+        /// <summary>เลื่อนแถบสถานะของกล้องไปยังขั้นที่กำหนด</summary>
+        /// <param name="rewind">true = ยอมให้ถอยกลับไปขั้นก่อนหน้าได้ (ใช้ตอนรีเซ็ต/อ่านไม่สำเร็จ)
+        /// ปกติเป็น false เพื่อไม่ให้สถานะกระพริบถอยหน้าถอยหลังตามจังหวะเฟรม</param>
+        private void SetLprStage(int camId, LprStage stage, bool rewind = false)
+        {
+            if (camId < 1 || camId > 2) return;
+            if (lprLines[camId, 0] == null) return;
+
+            Action apply = () =>
+            {
+                if (!rewind && stage <= lprStage[camId]) return;
+                lprStage[camId] = stage;
+
+                // บรรทัด 1: เทาตอนยังไม่เจอ → เหลืองค้างเมื่อเจอป้ายแล้ว
+                lprLines[camId, 0].ForeColor = stage >= LprStage.PlateFound ? StageYellow : StageGray;
+
+                // บรรทัด 2: โผล่เมื่อเริ่มอ่าน เป็นเหลือง → เขียวค้างเมื่ออ่านได้
+                lprLines[camId, 1].Visible = stage >= LprStage.Ocr;
+                lprLines[camId, 1].ForeColor = stage >= LprStage.OcrDone ? StageGreen : StageYellow;
+
+                // บรรทัด 3: โผล่เป็นเขียวค้างเมื่อส่งเข้าระบบตัดสินแล้ว
+                lprLines[camId, 2].Visible = stage >= LprStage.Confirmed;
+                lprLines[camId, 2].ForeColor = StageGreen;
+            };
+
+            if (this.InvokeRequired) this.BeginInvoke(apply);
+            else apply();
+        }
+
+        /// <summary>กลับไปจุดเริ่มต้น: เหลือบรรทัดเดียว "ตรวจจับป้าย" สีเทา</summary>
+        private void ResetLprStage(int camId) => SetLprStage(camId, LprStage.Idle, rewind: true);
+
+        /// <summary>ข้อความอธิบายเพิ่มเติม (conf / สาเหตุที่อ่านไม่ออก) ไปอยู่ใน tooltip
+        /// ของบรรทัดแรก เพื่อไม่ให้ไปรกแถบสถานะ 3 บรรทัด</summary>
+        private void SetLprDetail(int camId, string detail)
+        {
+            if (camId < 1 || camId > 2 || lprLines[camId, 0] == null) return;
+            Action apply = () => barrierTip.SetToolTip(lprLines[camId, 0], detail ?? "");
+            if (this.InvokeRequired) this.BeginInvoke(apply);
+            else apply();
+        }
         // มีบัตรแล้วแต่ป้ายยังไม่ตรง จะวนอ่านซ้ำได้กี่รอบ / นานสุดกี่วิ ก่อนยอมแพ้
         //
         // เดิมให้เวลา 20 วินาที ซึ่งนานเกินไป — ถ้าอ่าน 2 รอบแล้วยังไม่ตรง
@@ -269,7 +363,8 @@ namespace SmartGateLPR1
             LoadSavedSettings();
             LoadAccessPolicy();
             InitBarrierStatus();
-            ReloadBarrier();            // สร้างตัวควบคุมไม้กั้น + อัปเดตป้ายสถานะ
+            InitLprStatusLines();       // แถบสถานะ 3 บรรทัดของกล้องทั้งสองตัว
+            ReloadBarrier();           // สร้างตัวควบคุมไม้กั้น + อัปเดตป้ายสถานะ
             InitHistoryButton();
             if (!string.IsNullOrEmpty(DatabaseHelper.LastSchemaError))
             {
@@ -520,11 +615,10 @@ namespace SmartGateLPR1
             }
 
             lock (hybridLock) plateSeen[camId] = false;
+            ResetLprStage(camId);
             var pLbl = PlateLabel(camId);
-            var sLbl = StatusLabel(camId);
             Action reset = () =>
             {
-                sLbl.Text = "สถานะการตรวจจับป้ายทะเบียน"; sLbl.ForeColor = Color.Black;
                 pLbl.Text = "แสดงเลขทะเบียน"; pLbl.ForeColor = Color.Black;
             };
             if (this.InvokeRequired) this.BeginInvoke(reset); else reset();
@@ -1797,6 +1891,9 @@ namespace SmartGateLPR1
                 plateSubmittedAt[1] = plateSubmittedAt[2] = DateTime.MinValue;
                 bestConf[1] = bestConf[2] = 0;
             }
+            // ผลตัดสินออกแล้ว → แถบสถานะทั้งสองกล้องกลับไปจุดเริ่มต้น
+            ResetLprStage(1);
+            ResetLprStage(2);
         }
 
         /// <summary>ล้างผลอ่านของกล้องเดียว — ใช้ตอนป้ายหายจากเฟรมนานพอจะถือว่ารถไปแล้ว
@@ -1815,6 +1912,7 @@ namespace SmartGateLPR1
                 plateSubmittedAt[camId] = DateTime.MinValue;
                 bestConf[camId] = 0;
             }
+            ResetLprStage(camId);
         }
 
         // ✅ 3. ฟังก์ชันส่งรูปไปให้ Python API (ฉบับแก้ RAM ระเบิด 30GB)
@@ -1823,7 +1921,7 @@ namespace SmartGateLPR1
         // หลัง await จะถูกดีดกลับไปรันบน UI thread ทุกครั้ง (WinForms SynchronizationContext)
         // พอมี 2 กล้องพร้อมกันจะยิงรวมกันหลายสิบครั้ง/วินาที ทำให้ UI thread รับงาน
         // ท่วมจน "ค้าง" ทั้งโปรแกรม (คือปัญหาที่เจอตอนต่อกล้อง 2 ตัว) ส่วนจุดที่ต้อง
-        // แตะ UI จริง ๆ (SetPlateText/SetLprStatus/this.Invoke) ยังมี Invoke/BeginInvoke
+        // แตะ UI จริง ๆ (SetPlateText/SetLprStage/this.Invoke) ยังมี Invoke/BeginInvoke
         // กำกับไว้ครบอยู่แล้ว จึงตัดการ capture context ทิ้งได้อย่างปลอดภัย
         private async Task SendToAI(Bitmap bitmap, int camId)
         {
@@ -1855,7 +1953,7 @@ namespace SmartGateLPR1
                         if (jpegCodec != null) bitmap.Save(ms, jpegCodec, jpegHiQ);
                         else bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                         var content = new MultipartFormDataContent();
-                        SetLprStatus(camId, "⏳ กำลังประมวลผล...", Color.Blue);
+                        SetLprStage(camId, LprStage.Ocr);
                         content.Add(new ByteArrayContent(ms.ToArray()), "image", "frame.jpg");
 
                         // ส่งกรอบที่ /detect เพิ่งหาเจอไปด้วย ฝั่ง AI จะได้ไม่ต้องค้น
@@ -1932,19 +2030,20 @@ namespace SmartGateLPR1
                                 {
                                     // โชว์ conf ด้วย จะได้เห็นว่าค่าจริงจากกล้องนี้อยู่ราวไหน
                                     // (ใช้เทียบกับ submitConfMin ตอนจูนค่า)
-                                    SetLprStatus(camId,
-                                                 $"✅ ตรวจสอบสำเร็จ — ส่งให้ระบบตัดสินแล้ว (กล้อง{camName}, conf {sendConf:F2})",
-                                                 Color.Green);
+                                    SetLprStage(camId, LprStage.OcrDone);
+                                    SetLprStage(camId, LprStage.Confirmed);
+                                    SetLprDetail(camId, $"ส่งให้ระบบตัดสินแล้ว (กล้อง{camName}, conf {sendConf:F2})");
                                     OnPlateRead(plateText, camId, sendConf);
                                 }
                                 else if (confirmed)
                                 {
-                                    SetLprStatus(camId, $"✅ ตรวจสอบสำเร็จ — รอผลตัดสิน (กล้อง{camName})", Color.Green);
+                                    SetLprStage(camId, LprStage.OcrDone);
+                                    SetLprDetail(camId, $"อ่านได้แล้ว รอผลตัดสิน (กล้อง{camName})");
                                 }
                                 else
                                 {
-                                    SetLprStatus(camId, $"🔎 ยังไม่มั่นใจพอ อ่านซ้ำ {seenTimes}/{needReads} (กล้อง{camName})",
-                                                 Color.DarkOrange);
+                                    // ยังไม่มั่นใจพอ — ค้างที่ขั้น "กำลังประมวลผล" แล้ววนอ่านต่อ
+                                    SetLprDetail(camId, $"ยังไม่มั่นใจพอ อ่านซ้ำ {seenTimes}/{needReads} (กล้อง{camName})");
                                 }
                             });
 
@@ -1977,7 +2076,9 @@ namespace SmartGateLPR1
                             catch { }
 
                             string camName2 = camId == 1 ? "หน้า" : "หลัง";
-                            SetLprStatus(camId, $"⚠️ {why} (กล้อง{camName2})", Color.OrangeRed);
+                            // อ่านไม่ออก — ถอยกลับไปขั้น "เจอป้าย" เพื่อให้วนอ่านใหม่
+                            SetLprStage(camId, LprStage.PlateFound, rewind: true);
+                            SetLprDetail(camId, $"{why} (กล้อง{camName2})");
                             Console.WriteLine($"[predict] กล้อง{camId} อ่านไม่สำเร็จ: {why}");
                         }
                     }
@@ -2171,8 +2272,11 @@ namespace SmartGateLPR1
         {
             bool seen;
             lock (hybridLock) seen = plateSeen[camId];
-            if (seen) SetLprStatus(camId, "🟥 พบป้ายทะเบียน", Color.DarkOrange);
-            else SetLprStatus(camId, "รอตรวจจับ...", Color.Gray);
+            // เจอป้าย = ขึ้นขั้นที่ 1 (บรรทัดแรกเปลี่ยนเป็นเหลืองค้าง)
+            // ป้ายหายไป = กลับไปจุดเริ่มต้น แต่ห้ามไปล้างของกล้องที่ส่งผลเข้าระบบ
+            // ตัดสินไปแล้ว (ขั้น Confirmed) — ขั้นนั้นต้องค้างจนกว่าผลตัดสินจะออก
+            if (seen) SetLprStage(camId, LprStage.PlateFound);
+            else if (lprStage[camId] < LprStage.Confirmed) ResetLprStage(camId);
         }
 
         private void txtRTSP_TextChanged(object sender, EventArgs e)
@@ -2209,13 +2313,6 @@ namespace SmartGateLPR1
             }
             if (box.Image != null) box.Image.Dispose();
             box.Image = bmp;
-        }
-
-        private void SetLprStatus(int camId, string msg, Color c)
-        {
-            var lbl = StatusLabel(camId);
-            if (lbl.InvokeRequired) lbl.BeginInvoke(new Action(() => { lbl.Text = msg; lbl.ForeColor = c; }));
-            else { lbl.Text = msg; lbl.ForeColor = c; }
         }
 
         private void SetPlateText(int camId, string text)
