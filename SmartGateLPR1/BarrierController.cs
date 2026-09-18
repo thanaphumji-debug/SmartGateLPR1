@@ -1,7 +1,5 @@
 ﻿using System;
 using System.IO.Ports;
-using System.Net.Http;
-using System.Threading.Tasks;
 
 namespace SmartGateLPR1
 {
@@ -90,51 +88,6 @@ namespace SmartGateLPR1
         }
     }
 
-    // ---------- 3) บอร์ดในเครือข่าย (ESP32 / โมดูลรีเลย์ WiFi) ----------
-    public class HttpBarrier : IBarrier
-    {
-        private static readonly HttpClient http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-        private readonly string openUrl, closeUrl;
-
-        public HttpBarrier(string openUrl, string closeUrl)
-        { this.openUrl = openUrl; this.closeUrl = closeUrl; }
-
-        public string Describe => "บอร์ดในเครือข่าย: " + openUrl;
-
-        private void Fire(string url)
-        {
-            if (string.IsNullOrWhiteSpace(url)) return;
-            // ยิงแบบไม่รอผล เพื่อไม่ให้หน้าจอค้างถ้าบอร์ดไม่ตอบ
-            Task.Run(async () =>
-            {
-                try { await http.GetAsync(url); }
-                catch (Exception ex) { Console.WriteLine("สั่งไม้กั้นไม่ได้: " + ex.Message); }
-            });
-        }
-
-        public void Open() => Fire(openUrl);
-        public void Close() => Fire(closeUrl);
-
-        public string Test()
-        {
-            try
-            {
-                var res = http.GetAsync(openUrl).GetAwaiter().GetResult();
-                System.Threading.Thread.Sleep(600);
-                http.GetAsync(closeUrl).GetAwaiter().GetResult();
-                return $"OK|เชื่อมต่อบอร์ดสำเร็จ (HTTP {(int)res.StatusCode})";
-            }
-            catch (Exception ex)
-            {
-                return "ERR|ต่อบอร์ดไม่ได้\n\nตรวจสอบ:\n" +
-                       "• บอร์ดเปิดอยู่และอยู่ในวงเครือข่ายเดียวกันไหม\n" +
-                       "• ที่อยู่ URL ถูกต้องไหม (ลองเปิดในเบราว์เซอร์ดู)\n\n(" + ex.Message + ")";
-            }
-        }
-
-        public void Dispose() { }
-    }
-
     // ---------- ตัวสร้างตามค่าที่ตั้งไว้ ----------
     public static class BarrierFactory
     {
@@ -146,8 +99,6 @@ namespace SmartGateLPR1
                 case "serial":
                     return new SerialBarrier(st.BarrierComPort, st.BarrierBaudRate,
                                              st.BarrierOpenCmd, st.BarrierCloseCmd);
-                case "http":
-                    return new HttpBarrier(st.BarrierOpenUrl, st.BarrierCloseUrl);
                 default:
                     return new SimulatedBarrier();
             }

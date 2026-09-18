@@ -1482,11 +1482,6 @@ namespace SmartGateLPR1
                 shortText = $"🚦 ไม้กั้น: {st.BarrierComPort} · {st.BarrierBaudRate} bps";
                 color = Color.FromArgb(0, 100, 160);
             }
-            else if (mode == "http")
-            {
-                shortText = "🚦 ไม้กั้น: บอร์ดในเครือข่าย";
-                color = Color.FromArgb(0, 100, 160);
-            }
             else
             {
                 shortText = "🚦 ไม้กั้น: โหมดจำลอง";

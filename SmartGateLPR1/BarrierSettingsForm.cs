@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.IO.Ports;
 using System.Threading;
@@ -13,12 +13,11 @@ namespace SmartGateLPR1
     public class BarrierSettingsForm : Form
     {
         // ค่าที่เก็บใน settings คู่กับข้อความที่โชว์ในช่องเลือกโหมด
-        private static readonly string[] ModeKeys = { "simulate", "serial", "http" };
+        private static readonly string[] ModeKeys = { "simulate", "serial" };
         private static readonly string[] ModeNames =
         {
             "จำลอง — ไม่ต่อฮาร์ดแวร์ (แสดงผลบนหน้าจอเท่านั้น)",
             "USB Relay — ต่อผ่านพอร์ตอนุกรม (COM)",
-            "บอร์ดในเครือข่าย — สั่งผ่าน HTTP (ESP32 / WiFi Relay)",
         };
 
         private static readonly int[] CommonBauds = { 9600, 19200, 38400, 57600, 115200 };
@@ -28,12 +27,9 @@ namespace SmartGateLPR1
         private readonly ComboBox cboBaud = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown };
         private readonly TextBox txtOpenCmd = new TextBox();
         private readonly TextBox txtCloseCmd = new TextBox();
-        private readonly TextBox txtOpenUrl = new TextBox();
-        private readonly TextBox txtCloseUrl = new TextBox();
         private readonly NumericUpDown numGateOpen = new NumericUpDown { Minimum = 1, Maximum = 60 };
         private readonly Label lblStatus = new Label();
         private readonly GroupBox grpSerial = new GroupBox();
-        private readonly GroupBox grpHttp = new GroupBox();
         private readonly Button btnTest;
 
         private readonly btnDisconnectRFID main;
@@ -42,7 +38,7 @@ namespace SmartGateLPR1
         {
             main = mainForm;
             Text = "ตั้งค่าไม้กั้น";
-            ClientSize = new Size(480, 470);
+            ClientSize = new Size(480, 370);
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
@@ -94,40 +90,27 @@ namespace SmartGateLPR1
             });
             Controls.Add(grpSerial);
 
-            // ---------- โหมด HTTP ----------
-            grpHttp.Text = "ตั้งค่าบอร์ดในเครือข่าย (HTTP)";
-            grpHttp.SetBounds(20, 222, 440, 95);
-
-            grpHttp.Controls.Add(new Label { Text = "URL เปิด:", Left = 15, Top = 30, Width = 70 });
-            txtOpenUrl.SetBounds(90, 27, 330, 24);
-            grpHttp.Controls.Add(txtOpenUrl);
-
-            grpHttp.Controls.Add(new Label { Text = "URL ปิด:", Left = 15, Top = 62, Width = 70 });
-            txtCloseUrl.SetBounds(90, 59, 330, 24);
-            grpHttp.Controls.Add(txtCloseUrl);
-            Controls.Add(grpHttp);
-
             // ---------- เวลาเปิดค้าง ----------
-            Controls.Add(new Label { Text = "เปิดค้างก่อนปิดอัตโนมัติ:", Left = 20, Top = 332, Width = 145 });
-            numGateOpen.SetBounds(170, 330, 60, 24);
+            Controls.Add(new Label { Text = "เปิดค้างก่อนปิดอัตโนมัติ:", Left = 20, Top = 232, Width = 145 });
+            numGateOpen.SetBounds(170, 230, 60, 24);
             Controls.Add(numGateOpen);
             Controls.Add(new Label
             {
                 Text = "วินาที (นับตั้งแต่ตอนอนุญาตให้ผ่าน)",
-                Left = 238, Top = 332, Width = 230, ForeColor = Color.Gray
+                Left = 238, Top = 232, Width = 230, ForeColor = Color.Gray
             });
 
             // ---------- ทดสอบ / บันทึก ----------
-            btnTest = new Button { Text = "🔧 ทดสอบสั่งงาน", Left = 20, Top = 362, Width = 140, Height = 28 };
+            btnTest = new Button { Text = "🔧 ทดสอบสั่งงาน", Left = 20, Top = 262, Width = 140, Height = 28 };
             btnTest.Click += BtnTest_Click;
             Controls.Add(btnTest);
 
-            lblStatus.SetBounds(20, 396, 440, 32);
+            lblStatus.SetBounds(20, 296, 440, 32);
             Controls.Add(lblStatus);
 
-            var btnSave = new Button { Text = "บันทึก", Left = 290, Top = 432, Width = 85, Height = 28 };
+            var btnSave = new Button { Text = "บันทึก", Left = 290, Top = 332, Width = 85, Height = 28 };
             btnSave.Click += BtnSave_Click;
-            var btnCancel = new Button { Text = "ยกเลิก", Left = 383, Top = 432, Width = 85, Height = 28 };
+            var btnCancel = new Button { Text = "ยกเลิก", Left = 383, Top = 332, Width = 85, Height = 28 };
             btnCancel.Click += (s, e) => Close();
             AcceptButton = btnSave; CancelButton = btnCancel;
             Controls.AddRange(new Control[] { btnSave, btnCancel });
@@ -150,8 +133,6 @@ namespace SmartGateLPR1
 
             txtOpenCmd.Text = st.BarrierOpenCmd;
             txtCloseCmd.Text = st.BarrierCloseCmd;
-            txtOpenUrl.Text = st.BarrierOpenUrl;
-            txtCloseUrl.Text = st.BarrierCloseUrl;
             numGateOpen.Value = Math.Min(numGateOpen.Maximum,
                                 Math.Max(numGateOpen.Minimum, st.GateOpenSec > 0 ? st.GateOpenSec : 3));
 
@@ -191,7 +172,6 @@ namespace SmartGateLPR1
         {
             string mode = SelectedMode;
             grpSerial.Enabled = mode == "serial";
-            grpHttp.Enabled = mode == "http";
             btnTest.Enabled = mode != "simulate";
             lblStatus.Text = "";
         }
@@ -204,8 +184,6 @@ namespace SmartGateLPR1
             st.BarrierBaudRate = int.TryParse(cboBaud.Text.Trim(), out int b) && b > 0 ? b : 9600;
             st.BarrierOpenCmd = txtOpenCmd.Text.Trim();
             st.BarrierCloseCmd = txtCloseCmd.Text.Trim();
-            st.BarrierOpenUrl = txtOpenUrl.Text.Trim();
-            st.BarrierCloseUrl = txtCloseUrl.Text.Trim();
             st.GateOpenSec = (int)numGateOpen.Value;
             return st;
         }
@@ -217,8 +195,6 @@ namespace SmartGateLPR1
             string mode = SelectedMode;
             if (mode == "serial" && string.IsNullOrWhiteSpace(cboCom.Text))
             { ShowError("เลือกพอร์ต COM ก่อน"); return; }
-            if (mode == "http" && string.IsNullOrWhiteSpace(txtOpenUrl.Text))
-            { ShowError("กรอก URL เปิดก่อน"); return; }
 
             // ทดสอบตามค่าที่กรอกอยู่บนหน้าจอ (ยังไม่ต้องกดบันทึก)
             AppSettings probe = ReadUi(new AppSettings());
@@ -265,8 +241,6 @@ namespace SmartGateLPR1
             string mode = SelectedMode;
             if (mode == "serial" && string.IsNullOrWhiteSpace(cboCom.Text))
             { ShowError("เลือกพอร์ต COM ก่อนบันทึก"); return; }
-            if (mode == "http" && string.IsNullOrWhiteSpace(txtOpenUrl.Text))
-            { ShowError("กรอก URL เปิดก่อนบันทึก"); return; }
 
             SettingsStore.Save(ReadUi(SettingsStore.Load()));
             main?.ReloadBarrier();      // ใช้ค่าใหม่ทันที ไม่ต้องปิดเปิดโปรแกรม

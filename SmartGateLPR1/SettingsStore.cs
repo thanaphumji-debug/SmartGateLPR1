@@ -30,13 +30,11 @@ namespace SmartGateLPR1
         public bool AllowNoPlate { get; set; } = true;
         public bool AcceptedEula { get; set; } = false;
         // --- การควบคุมไม้กั้น ---
-        public string BarrierMode { get; set; } = "simulate";   // simulate / serial / http
+        public string BarrierMode { get; set; } = "simulate";   // simulate / serial
         public string BarrierComPort { get; set; } = "COM3";
         public int BarrierBaudRate { get; set; } = 9600;
         public string BarrierOpenCmd { get; set; } = "A0 01 01 A2";   // ค่าเริ่มต้นของบอร์ด LCUS-1
         public string BarrierCloseCmd { get; set; } = "A0 01 00 A1";
-        public string BarrierOpenUrl { get; set; } = "http://192.168.0.60/open";
-        public string BarrierCloseUrl { get; set; } = "http://192.168.0.60/close";
         public int GateOpenSec { get; set; } = 3;   // เปิดไม้กั้นค้างกี่วินาที ก่อนสั่งปิดอัตโนมัติ
     }
 
