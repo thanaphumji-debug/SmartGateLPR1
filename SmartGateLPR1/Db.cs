@@ -47,7 +47,7 @@ namespace SmartGateLPR1
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
                 LocalDbPath = Path.GetFullPath(path);
-                ConnStr = $"Data Source={LocalDbPath};Version=3;";
+                ConnStr = BuildSqliteConnStr(LocalDbPath);
                 Describe = "SQLite — " + LocalDbPath;
             }
 
@@ -64,12 +64,35 @@ namespace SmartGateLPR1
 
         public static string BuildMySqlConnStr(AppSettings st)
         {
-            int port = st.DbPort > 0 ? st.DbPort : 3306;
-            // สร้างเป็นข้อความตรง ๆ เพื่อไม่ผูกกับชื่อ enum ของไลบรารีเวอร์ชันใด ๆ
-            return $"Server={st.DbHost};Port={port};Database={st.DbName};" +
-                   $"User ID={st.DbUser};Password={st.DbPassword};" +
-                   $"SslMode={(st.CloudUseSsl ? "Preferred" : "None")};" +
-                   "CharSet=utf8mb4;Connection Timeout=8;Default Command Timeout=30;";
+            // ใช้ builder เพื่อ escape อักขระพิเศษ (; = ' ") ในรหัสผ่าน/ชื่อ ให้อัตโนมัติ
+            // ตั้งค่าผ่าน indexer ด้วยชื่อคีย์ เพื่อไม่ผูกกับชื่อ enum ของไลบรารีเวอร์ชันใด ๆ
+            var b = new MySqlConnectionStringBuilder();
+            b["Server"] = (st.DbHost ?? "").Trim();
+            b["Port"] = st.DbPort > 0 ? st.DbPort : 3306;
+            b["Database"] = (st.DbName ?? "").Trim();
+            b["User ID"] = (st.DbUser ?? "").Trim();
+            b["Password"] = st.DbPassword ?? "";
+            b["SslMode"] = st.CloudUseSsl ? "Preferred" : "None";
+            b["CharSet"] = "utf8mb4";
+            b["Connection Timeout"] = 15;
+            b["Default Command Timeout"] = 30;
+            return b.ConnectionString;
+        }
+
+        public static string BuildSqliteConnStr(string path)
+        {
+            var b = new SQLiteConnectionStringBuilder
+            {
+                DataSource = path,
+                Version = 3,
+                // รอคิวแทนการโยน "database is locked" ทันทีเมื่อหลาย thread เขียนพร้อมกัน
+                BusyTimeout = 5000,
+                DefaultTimeout = 30,
+            };
+            // WAL ให้อ่านได้ระหว่างมีการเขียน แต่ใช้กับไฟล์บน network share ไม่ได้
+            if (!path.StartsWith(@"\\"))
+                b.JournalMode = SQLiteJournalModeEnum.Wal;
+            return b.ConnectionString;
         }
 
         // ================= เปิดการเชื่อมต่อ / สั่งงาน =================
@@ -190,7 +213,7 @@ namespace SmartGateLPR1
                     string dir = Path.GetDirectoryName(Path.GetFullPath(path));
                     if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-                    using (var c = new SQLiteConnection($"Data Source={path};Version=3;"))
+                    using (var c = new SQLiteConnection(BuildSqliteConnStr(Path.GetFullPath(path))))
                     {
                         c.Open();
                         using (var cmd = c.CreateCommand())
@@ -213,14 +236,30 @@ namespace SmartGateLPR1
                         cmd.CommandText = "SELECT VERSION()";
                         string ver = Convert.ToString(cmd.ExecuteScalar());
 
-                        // เช็คสิทธิ์เขียนด้วย ไม่ใช่แค่ต่อได้
-                        cmd.CommandText = "CREATE TABLE IF NOT EXISTS _sg_check (id INT PRIMARY KEY)";
-                        cmd.ExecuteNonQuery();
-                        cmd.CommandText = "DROP TABLE _sg_check";
-                        cmd.ExecuteNonQuery();
+                        // ตารางของระบบมีอยู่แล้ว -> ต้องการแค่สิทธิ์อ่าน/เขียนข้อมูล ไม่ต้องมีสิทธิ์ CREATE/DROP
+                        // ยังไม่มี -> โปรแกรมต้องสร้างตารางเองตอนเริ่มครั้งแรก จึงค่อยเช็คสิทธิ์ CREATE
+                        cmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables " +
+                                          "WHERE table_schema = DATABASE() AND table_name = 'access_logs'";
+                        bool tablesExist = Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+
+                        string perm;
+                        if (tablesExist)
+                        {
+                            cmd.CommandText = "SELECT 1 FROM access_logs LIMIT 1";
+                            cmd.ExecuteScalar();
+                            perm = "พบตารางของระบบแล้ว อ่านข้อมูลได้ ✓";
+                        }
+                        else
+                        {
+                            cmd.CommandText = "CREATE TABLE IF NOT EXISTS _sg_check (id INT PRIMARY KEY)";
+                            cmd.ExecuteNonQuery();
+                            cmd.CommandText = "DROP TABLE _sg_check";
+                            cmd.ExecuteNonQuery();
+                            perm = "ฐานข้อมูลว่าง มีสิทธิ์สร้างตารางได้ ✓";
+                        }
 
                         return "OK|เชื่อมต่อสำเร็จ\nMySQL/MariaDB เวอร์ชัน " + ver +
-                               "\nฐานข้อมูล: " + st.DbName + "\nมีสิทธิ์สร้าง/ลบตาราง ✓";
+                               "\nฐานข้อมูล: " + st.DbName + "\n" + perm;
                     }
                 }
             }
@@ -245,6 +284,13 @@ namespace SmartGateLPR1
 
             if (low.Contains("access denied"))
                 return "Username หรือ Password ไม่ถูกต้อง\nหรือผู้ใช้นี้ไม่มีสิทธิ์เข้าฐานข้อมูลนี้\n\n(" + m + ")";
+
+            if (low.Contains("command denied") || low.Contains("permission"))
+                return "ต่อได้แล้ว แต่ผู้ใช้นี้ไม่มีสิทธิ์เพียงพอ\nให้ผู้ดูแล server เพิ่มสิทธิ์ " +
+                       "SELECT/INSERT/UPDATE/DELETE (และ CREATE ถ้ายังไม่มีตาราง)\n\n(" + m + ")";
+
+            if (low.Contains("database is locked") || low.Contains("database is busy"))
+                return "ไฟล์ฐานข้อมูลถูกโปรแกรมอื่นใช้งานอยู่\nปิดโปรแกรมที่เปิดไฟล์นี้ค้างไว้ (เช่น DB Browser) แล้วลองใหม่\n\n(" + m + ")";
 
             if (low.Contains("unknown database"))
                 return "ไม่พบฐานข้อมูลชื่อนี้บน server\nต้องสร้างฐานข้อมูลเปล่าไว้ก่อน\n\n(" + m + ")";
