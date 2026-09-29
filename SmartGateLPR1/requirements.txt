@@ -31,3 +31,30 @@ onnxruntime>=1.17
 flask>=3.0
 opencv-python>=4.8
 numpy>=1.24
+
+# ---- แพ็กเกจกลุ่ม paddlex[ocr] ----
+# paddleocr 3.x ใช้ paddlex เป็น pipeline runner และ paddlex เช็คเองว่าลงกลุ่มนี้
+# ครบหรือยังก่อนสร้าง pipeline "OCR" ถ้าขาดตัวใดตัวหนึ่งจะพังตอนรันด้วย
+# "requires additional dependencies" แม้จะลง paddleocr/paddlepaddle ไว้แล้วก็ตาม
+# รายชื่อนี้ได้มาจาก: python -c "from paddlex.utils.deps import EXTRAS; print(list(EXTRAS['ocr'].keys()))"
+beautifulsoup4
+einops
+ftfy
+imagesize
+Jinja2
+latex2mathml
+lxml
+opencv-contrib-python
+openpyxl
+premailer
+pyclipper
+pypdfium2
+python-bidi
+regex
+safetensors
+scikit-learn
+scipy
+sentencepiece
+shapely
+tiktoken
+tokenizers

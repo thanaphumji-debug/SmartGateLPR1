@@ -24,6 +24,18 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# กลุ่มไลบรารีของ paddlex[ocr] extra — paddlex เช็คเองว่าลงครบก่อนสร้าง
+# pipeline "OCR" ถ้าไม่เก็บมาด้วย (ทั้งตัวโค้ดและ metadata สำหรับ importlib.metadata)
+# จะพังด้วย "requires additional dependencies" แม้ paddleocr/paddlepaddle จะครบแล้ว
+for _pkg in [
+    'bs4', 'einops', 'ftfy', 'imagesize', 'jinja2', 'latex2mathml', 'lxml',
+    'openpyxl', 'premailer', 'pyclipper', 'pypdfium2', 'bidi', 'regex',
+    'safetensors', 'sklearn', 'scipy', 'sentencepiece', 'shapely',
+    'tiktoken', 'tokenizers',
+]:
+    tmp_ret = collect_all(_pkg)
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 
 a = Analysis(
     ['lpr_api.py'],
