@@ -8,6 +8,10 @@ tmp_ret = collect_all('paddleocr')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('paddle')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# paddleocr 3.x ผูกกับ paddlex เพื่อโหลด pipeline config (ไฟล์ .yaml) — ถ้าไม่เก็บมาด้วย
+# จะพังตอนรันเป็น exe ด้วย "The pipeline (OCR) does not exist!" เพราะหาไฟล์ config ไม่เจอ
+tmp_ret = collect_all('paddlex')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ultralytics')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('torch')
