@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 datas = [('plate_detector.pt', '.'), ('thai_plate.py', '.')]
 binaries = []
@@ -8,10 +8,13 @@ tmp_ret = collect_all('paddleocr')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('paddle')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-# paddleocr 3.x ผูกกับ paddlex เพื่อโหลด pipeline config (ไฟล์ .yaml) — ถ้าไม่เก็บมาด้วย
-# จะพังตอนรันเป็น exe ด้วย "The pipeline (OCR) does not exist!" เพราะหาไฟล์ config ไม่เจอ
+# paddleocr 3.x ผูกกับ paddlex เพื่อโหลด pipeline config (ไฟล์ .yaml ใน paddlex\configs\)
+# collect_all อย่างเดียวพลาดโฟลเดอร์นี้ไป (ยืนยันจากการทดสอบจริง) จึงต้องบังคับเก็บ
+# ไฟล์ .yaml ทั้งหมดในแพ็กเกจแบบเจาะจงอีกชั้น ไม่งั้นจะพังตอนรันเป็น exe ด้วย
+# "The pipeline (OCR) does not exist!" เพราะหาไฟล์ config ของ pipeline "OCR" ไม่เจอ
 tmp_ret = collect_all('paddlex')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+datas += collect_data_files('paddlex', includes=['**/*.yaml', '**/*.yml'])
 tmp_ret = collect_all('ultralytics')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('torch')
