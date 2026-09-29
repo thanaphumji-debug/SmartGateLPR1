@@ -37,6 +37,13 @@ a = Analysis(
     excludes=[],
     noarchive=False,
     optimize=0,
+    # paddlex คำนวณ path ไปหาไฟล์ config .yaml จาก __file__ ของตัวเอง (ดู
+    # get_pipeline_path ใน paddlex/inference/pipelines/__init__.py) ถ้าเก็บ .py
+    # ของแพ็กเกจนี้แบบไบต์โค้ดฝังในไฟล์ exe (ค่าเริ่มต้นของ PyInstaller) __file__
+    # จะไม่ชี้ไปตำแหน่งจริงบนดิสก์ คำนวณ path ผิด หาไฟล์ .yaml ไม่เจอเลยแม้จะ
+    # เก็บไฟล์นั้นไว้ถูกที่แล้วก็ตาม ("The pipeline (OCR) does not exist!")
+    # ต้องบังคับให้เก็บเป็นไฟล์ .py แยกจริงบนดิสก์แทน
+    module_collection_mode={'paddlex': 'py'},
 )
 pyz = PYZ(a.pure)
 
