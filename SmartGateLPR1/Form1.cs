@@ -381,7 +381,9 @@ namespace SmartGateLPR1
                 aiProcess = new Process();
                 aiProcess.StartInfo.FileName = exe;
                 aiProcess.StartInfo.WorkingDirectory = Path.GetDirectoryName(exe);
-                aiProcess.StartInfo.CreateNoWindow = true;
+                // โชว์หน้าต่าง console ของ lpr_api.exe ไว้ ไม่ซ่อน เผื่อต้องดู log
+                // การตรวจจับ/อ่านป้ายแบบเรียลไทม์ตอนใช้งานจริง
+                aiProcess.StartInfo.CreateNoWindow = false;
                 aiProcess.StartInfo.UseShellExecute = false;
                 aiProcess.Start();
             }
