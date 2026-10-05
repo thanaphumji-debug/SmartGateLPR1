@@ -24,6 +24,10 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 ; ปิดไว้ก่อน ถ้ามีไอคอนเป็น .ico ค่อยเปิดบรรทัดนี้แล้วใส่ path จริง
 ;SetupIconFile=SmartGateLPR.ico
+; หน้า "ข้อตกลงการใช้งาน" จะโผล่เป็นหน้าแรกของตัวติดตั้งโดยอัตโนมัติ
+; ผู้ติดตั้งต้องเลือก "ฉันยอมรับข้อตกลง" ก่อนถึงจะกด Next ต่อไปได้
+; ไฟล์นี้ต้อง save เป็น UTF-8 with BOM ไม่งั้นภาษาไทยจะเพี้ยนตอนแสดงผล
+LicenseFile=license.txt
 
 [Languages]
 Name: "thai"; MessagesFile: "compiler:Languages\Thai.isl"
