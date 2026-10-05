@@ -356,10 +356,23 @@ namespace SmartGateLPR1
         {
             try
             {
-                // ถ้ามีบริการ AI เปิดอยู่แล้ว (ตอน dev เปิดเองด้วย python) ไม่ต้องเปิดซ้ำ
+                // ถ้ามีบริการ AI เปิดอยู่แล้ว (ตอน dev เปิดเองด้วย python หรือเป็น
+                // ai\lpr_api.exe ที่ค้างมาจากรอบก่อนหน้า เช่น ตอนโปรแกรมเด้งปิดเอง
+                // แบบไม่ผ่าน FormClosing) ไม่ต้องเปิดซ้ำ แต่ต้องไปหา handle ของ
+                // โปรเซสเดิมมาเก็บไว้ด้วย ไม่งั้นตอนปิดโปรแกรมรอบนี้ StopAiService
+                // จะหา aiProcess ไม่เจอ (เป็น null) แล้วปล่อย python ตัวนั้นรันค้างทิ้งไว้
                 using (var probe = new System.Net.Sockets.TcpClient())
                 {
-                    try { probe.Connect("127.0.0.1", 5000); return; } catch { }
+                    try
+                    {
+                        probe.Connect("127.0.0.1", 5000);
+                        foreach (var p in Process.GetProcessesByName("lpr_api"))
+                        {
+                            try { aiProcess = p; break; } catch { }
+                        }
+                        return;
+                    }
+                    catch { }
                 }
 
                 string exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ai", "lpr_api.exe");
@@ -380,6 +393,17 @@ namespace SmartGateLPR1
             try
             {
                 if (aiProcess != null && !aiProcess.HasExited) aiProcess.Kill(true);
+            }
+            catch { }
+
+            // กันตกหล่น: เผื่อมี lpr_api.exe ตัวอื่นที่ไม่ได้มาจาก aiProcess ค้างอยู่
+            // (เช่น เปิดโปรแกรมซ้อนหลายรอบ หรือรอบก่อนหน้าเด้งปิดก่อนจะมาถึงจุดนี้)
+            try
+            {
+                foreach (var p in Process.GetProcessesByName("lpr_api"))
+                {
+                    try { if (!p.HasExited) p.Kill(true); } catch { }
+                }
             }
             catch { }
         }
